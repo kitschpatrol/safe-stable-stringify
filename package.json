@@ -1,65 +1,81 @@
 {
-  "name": "safe-stable-stringify",
-  "version": "2.5.0",
-  "description": "Deterministic and safely JSON.stringify to quickly serialize JavaScript objects",
-  "exports": {
-    "require": "./index.js",
-    "import": "./esm/wrapper.js"
-  },
-  "keywords": [
-    "stable",
-    "stringify",
-    "JSON",
-    "JSON.stringify",
-    "safe",
-    "serialize",
-    "deterministic",
-    "circular",
-    "object",
-    "predicable",
-    "repeatable",
-    "fast",
-    "bigint"
-  ],
-  "main": "index.js",
-  "scripts": {
-    "test": "standard && tap test.js",
-    "tap": "tap test.js",
-    "tap:only": "tap test.js --watch --only",
-    "benchmark": "node --allow-natives-syntax benchmark.js",
-    "compare": "node --allow-natives-syntax compare.js",
-    "lint": "standard --fix",
-    "tsc": "tsc --project tsconfig.json"
-  },
-  "engines": {
-    "node": ">=10"
-  },
-  "author": "Ruben Bridgewater",
-  "license": "MIT",
-  "typings": "index.d.ts",
-  "devDependencies": {
-    "@types/json-stable-stringify": "^1.2.0",
-    "@types/node": "^18.19.130",
-    "clone": "^2.1.2",
-    "fast-json-stable-stringify": "^2.1.0",
-    "fast-safe-stringify": "^2.1.1",
-    "fast-stable-stringify": "^1.0.0",
-    "faster-stable-stringify": "^1.0.0",
-    "fastest-stable-stringify": "^2.0.2",
-    "json-stable-stringify": "^1.3.0",
-    "json-stringify-deterministic": "^1.0.12",
-    "json-stringify-safe": "^5.0.1",
-    "bench-node": "^0.14.0",
-    "standard": "^17.1.2",
-    "tap": "^16.3.10",
-    "typescript": "^5.9.3"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/BridgeAR/safe-stable-stringify.git"
-  },
-  "bugs": {
-    "url": "https://github.com/BridgeAR/safe-stable-stringify/issues"
-  },
-  "homepage": "https://github.com/BridgeAR/safe-stable-stringify#readme"
+	"name": "@kitschpatrol/safe-stable-stringify",
+	"version": "2.5.0",
+	"description": "Fork of safe-stable-stringify with an ESM fix.",
+	"keywords": [
+		"serialize",
+		"stable",
+		"stringify",
+		"npm-package"
+	],
+	"homepage": "https://github.com/kitschpatrol/safe-stable-stringify",
+	"bugs": "https://github.com/kitschpatrol/safe-stable-stringify/issues",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/kitschpatrol/safe-stable-stringify.git"
+	},
+	"license": "MIT",
+	"author": {
+		"name": "Ruben Bridgewater",
+		"email": "ruben@bridgewater.de"
+	},
+	"contributors": [
+		{
+			"name": "Eric Mika",
+			"email": "eric@ericmika.com",
+			"url": "https://ericmika.com"
+		}
+	],
+	"sideEffects": false,
+	"type": "module",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		}
+	},
+	"main": "./dist/index.js",
+	"module": "./dist/index.js",
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"bench": "vitest bench --run",
+		"bench:baseline": "vitest bench --run --outputJson test/benchmarks/baseline.json",
+		"bench:compare": "vitest bench --run --compare test/benchmarks/baseline.json",
+		"build": "tsdown",
+		"clean": "shx rm -f pnpm-lock.yaml && git clean -fdX -e !.claude/",
+		"fix": "ksc fix",
+		"lint": "ksc lint",
+		"release": "bumpp --commit 'Release: %s' && pnpm build && NPM_AUTH_TOKEN=$(op read 'op://Personal/npm/token') && pnpm publish",
+		"test": "vitest run"
+	},
+	"devDependencies": {
+		"@arethetypeswrong/core": "^0.18.5",
+		"@kitschpatrol/shared-config": "^8.4.0",
+		"@types/node": "~24.13.3",
+		"bumpp": "^12.0.0",
+		"fast-json-stable-stringify": "^2.1.0",
+		"fast-safe-stringify": "^2.1.1",
+		"fast-stable-stringify": "^1.0.0",
+		"faster-stable-stringify": "^1.0.0",
+		"fastest-stable-stringify": "^2.0.2",
+		"json-stable-stringify": "^1.3.0",
+		"json-stringify-deterministic": "^1.0.14",
+		"publint": "^0.3.21",
+		"shx": "^0.4.0",
+		"tsdown": "^0.22.12",
+		"typescript": "~6.0.3",
+		"vitest": "^4.1.10"
+	},
+	"packageManager": "pnpm@11.15.0",
+	"engines": {
+		"node": ">=20.19.0"
+	},
+	"devEngines": {
+		"runtime": {
+			"name": "node",
+			"version": ">=24.16.0"
+		}
+	}
 }

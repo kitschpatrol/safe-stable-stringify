@@ -1,6 +1,14 @@
 # Changelog
 
-## Next
+## @kitschpatrol/safe-stable-stringify fork
+
+- See the readme for changes.
+
+---
+
+Upstream changelog:
+
+## Unreleased
 
 - Added `'string'` as possible `bigint` option value. Bigint values are serialized as JSON strings using it.
 
@@ -8,7 +16,7 @@
 import { configure } from 'safe-stable-stringify'
 
 const stringify = configure({
-  bigint: 'string'
+  bigint: 'string',
 })
 
 stringify([1n, 2, 3n, 4, 5n])
@@ -24,17 +32,33 @@ stringify([1n, 2, 3n, 4, 5n])
 import { configure } from 'safe-stable-stringify'
 
 const stringify = configure({
-  safe: true
+  safe: true,
 })
 
-stringify([{
-  foo: { a: 5, get foo() { throw new Error('Oops') }, c: true }
-}])
+stringify([
+  {
+    foo: {
+      a: 5,
+      c: true,
+      get foo() {
+        throw new Error('Oops')
+      },
+    },
+  },
+])
 // '[{"foo":"Error: Stringification failed. Message: Oops"}]'
 
-stringify([{
-  foo: { a: 5, toJSON() { throw new Error('Oops') }, c: true }
-}])
+stringify([
+  {
+    foo: {
+      a: 5,
+      c: true,
+      toJSON() {
+        throw new Error('Oops')
+      },
+    },
+  },
+])
 // '[{"foo":"Error: Stringification failed. Message: Oops"}]'
 ```
 
@@ -52,7 +76,7 @@ const object = {
 }
 
 const stringify = configure({
-  deterministic: (a, b) => b.localeCompare(a)
+  deterministic: (a, b) => b.localeCompare(a),
 })
 
 stringify(object)
@@ -96,7 +120,7 @@ Thanks to @flobernd, @cesco69 and @prisis to contribute to this release!
 import { configure } from 'safe-stable-stringify'
 
 const object = {}
-object.circular = object;
+object.circular = object
 
 const stringify = configure({ circularValue: TypeError })
 
@@ -115,7 +139,7 @@ stringify(object)
 import { configure } from 'safe-stable-stringify'
 
 const object = { array: [] }
-object.circular = object;
+object.circular = object
 object.array.push(object)
 
 configure({ circularValue: undefined })(object)
@@ -133,10 +157,10 @@ configure({ circularValue: undefined })(object)
 
 ## v2.0.0
 
-- __[BREAKING]__ Convert BigInt to number by default instead of ignoring these values
+- **\[BREAKING]** Convert BigInt to number by default instead of ignoring these values
   If you wish to ignore these values similar to earlier versions, just use the new `bigint` option and set it to `false`.
-- __[BREAKING]__ Support ESM
-- __[BREAKING]__ Requires ES6
+- **\[BREAKING]** Support ESM
+- **\[BREAKING]** Requires ES6
 - Optional BigInt support
 - Deterministic behavior is now optional
 - The value to indicate a circular structure is now adjustable
@@ -151,9 +175,9 @@ configure({ circularValue: undefined })(object)
 
 ## v1.1.0
 
-- Add support for IE11 (https://github.com/BridgeAR/safe-stable-stringify/commit/917b6128de135a950ec178d66d86b4d772c7656d)
-- Fix issue with undefined values (https://github.com/BridgeAR/safe-stable-stringify/commit/4196f87, https://github.com/BridgeAR/safe-stable-stringify/commit/4eab558)
-- Fix typescript definition (https://github.com/BridgeAR/safe-stable-stringify/commit/7a87478)
-- Improve code coverage (https://github.com/BridgeAR/safe-stable-stringify/commit/ed8cadc, https://github.com/BridgeAR/safe-stable-stringify/commit/b58c494)
-- Update dev dependencies (https://github.com/BridgeAR/safe-stable-stringify/commit/b857ea8)
+- Add support for IE11 (<https://github.com/BridgeAR/safe-stable-stringify/commit/917b6128de135a950ec178d66d86b4d772c7656d>)
+- Fix issue with undefined values (<https://github.com/BridgeAR/safe-stable-stringify/commit/4196f87>, <https://github.com/BridgeAR/safe-stable-stringify/commit/4eab558>)
+- Fix typescript definition (<https://github.com/BridgeAR/safe-stable-stringify/commit/7a87478>)
+- Improve code coverage (<https://github.com/BridgeAR/safe-stable-stringify/commit/ed8cadc>, <https://github.com/BridgeAR/safe-stable-stringify/commit/b58c494>)
+- Update dev dependencies (<https://github.com/BridgeAR/safe-stable-stringify/commit/b857ea8>)
 - Improve docs

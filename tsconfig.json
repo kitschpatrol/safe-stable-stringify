@@ -1,24 +1,8 @@
 {
-  "compilerOptions": {
-    "baseUrl": "./",
-    "allowJs": true,
-    "checkJs": true,
-    "sourceMap": false,
-    "declaration": false,
-    "noEmit": true,
-    "downlevelIteration": false,
-    "experimentalDecorators": false,
-    "moduleResolution": "nodenext",
-    "importHelpers": false,
-    "target": "esnext",
-    "module": "NodeNext",
-    "strict": true,
-    "noImplicitAny": false,
-    "lib": [
-      "esnext",
-      "dom"
-    ]
-  },
-  "include": ["**/*.js", "**/*.ts", "esm/wrapper.mjs"],
-  "exclude": ["compare.js", "benchmark.js", "./coverage"]
+	"extends": "@kitschpatrol/typescript-config",
+	"compilerOptions": {
+		"types": ["node"]
+	},
+	"include": ["**/**.*"],
+	"exclude": ["dist/", "old/"]
 }

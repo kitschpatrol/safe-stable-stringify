@@ -1,0 +1,30 @@
+packages:
+  - '.'
+
+publicHoistPattern:
+  - '@kitschpatrol/repo-config'
+  - '@kitschpatrol/typescript-config'
+  - 'case-police'
+  - '*cspell*'
+  - '*eslint*'
+  - '*knip*'
+  - '*mdat*'
+  - '*prettier*'
+  - '*remark*'
+  - '*stylelint*'
+allowBuilds:
+  esbuild: true
+  oxc-resolver: true
+  unrs-resolver: true
+minimumReleaseAgeExclude:
+  - '@kitschpatrol/cspell-config@8.3.0 || 8.4.0'
+  - '@kitschpatrol/eslint-config@8.3.0 || 8.4.0'
+  - '@kitschpatrol/knip-config@8.3.0 || 8.4.0'
+  - '@kitschpatrol/mdat-config@8.3.0 || 8.4.0'
+  - '@kitschpatrol/prettier-config@8.3.0 || 8.4.0'
+  - '@kitschpatrol/remark-config@8.3.0 || 8.4.0'
+  - '@kitschpatrol/repo-config@8.3.0 || 8.4.0'
+  - '@kitschpatrol/shared-config@8.3.0 || 8.4.0'
+  - '@kitschpatrol/stylelint-config@8.3.0 || 8.4.0'
+  - '@kitschpatrol/typescript-config@8.3.0 || 8.4.0'
+  - eslint-plugin-svelte@3.22.0

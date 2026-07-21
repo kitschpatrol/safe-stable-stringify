@@ -1,0 +1,31 @@
+import { cspellConfig } from '@kitschpatrol/cspell-config'
+
+export default cspellConfig({
+	words: [
+		'Bascom',
+		'BICOL',
+		'Brownlee',
+		'Cersei',
+		'cesco',
+		'Daenerys',
+		'DFFF',
+		'dinklage',
+		'flobernd',
+		'Gallatin',
+		'Geyserville',
+		'Gorham',
+		'headey',
+		'JIMBIES',
+		'Knowlton',
+		'Lannister',
+		'Maiborn',
+		'Meereen',
+		'prisis',
+		'Stringifier',
+		'Targaryen',
+		'Tyrion',
+		'Tywin',
+		'XUMONK',
+		'ZILPHUR',
+	],
+})
