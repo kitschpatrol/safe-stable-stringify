@@ -1,4 +1,4 @@
-/* eslint-disable complexity */
+/* eslint-disable complexity, perfectionist/sort-switch-case */
 
 type NullValue = Exclude<ReturnType<RegExp['exec']>, RegExpExecArray>
 type UnknownFunction = (...args: unknown[]) => unknown
@@ -95,15 +95,6 @@ function getLength(value: unknown): number | undefined {
 	return typeof length === 'number' ? length : undefined
 }
 
-function isUnknownFunction(value: unknown): value is UnknownFunction {
-	return typeof value === 'function'
-}
-
-function getToJson(value: unknown): undefined | UnknownFunction {
-	const toJson = getProperty(value, 'toJSON')
-	return isUnknownFunction(toJson) ? toJson : undefined
-}
-
 function stringifyString(value: string): string {
 	// These thresholds performed well in benchmarks against V8 8.0 and remain cheaper than
 	// calling the native serializer for the common case.
@@ -123,15 +114,10 @@ function sortStrings(values: string[], comparator?: Comparator): string[] {
 	}
 
 	for (let index = 1; index < values.length; index++) {
-		const currentValue = values[index]
-		if (currentValue === undefined) {
-			continue
-		}
-
+		const currentValue = values[index]!
 		let position = index
-		while (position !== 0 && (values[position - 1] ?? currentValue) > currentValue) {
-			const previousValue = values[position - 1] ?? currentValue
-			values[position] = previousValue
+		while (position !== 0 && values[position - 1]! > currentValue) {
+			values[position] = values[position - 1]!
 			position--
 		}
 
@@ -370,16 +356,15 @@ function callSafe(method: UnknownFunction, thisArgument: unknown, input: unknown
 	}
 }
 
-function callReplacerSafe(
-	method: ReplacerFunction,
-	thisArgument: unknown,
-	key: string,
-	value: unknown,
-): unknown {
-	try {
-		return method.call(thisArgument, key, value)
-	} catch (error) {
-		return getErrorMessage(error, method.name)
+function makeSafeReplacer(method: ReplacerFunction): ReplacerFunction {
+	return function (key, value): unknown {
+		try {
+			// The replacer must receive the same parent object as the native JSON API.
+			// eslint-disable-next-line unicorn/no-this-outside-of-class
+			return method.call(this, key, value)
+		} catch (error) {
+			return getErrorMessage(error, method.name)
+		}
 	}
 }
 
@@ -428,18 +413,18 @@ export function configure(options: StringifyOptions = {}): Stringify {
 		spacer,
 		indentation,
 	) => {
-		let value = getProperty(parent, key)
+		let value = (parent as Record<string, unknown>)[key]
 
 		if (typeof value === 'object' && value) {
-			const toJson = getToJson(value)
-			if (toJson) {
-				value = isSafe ? callSafe(toJson, value, key) : toJson.call(value, key)
+			const toJson = (value as { toJSON?: unknown }).toJSON
+			if (typeof toJson === 'function') {
+				value = isSafe
+					? callSafe(toJson as UnknownFunction, value, key)
+					: (toJson as UnknownFunction).call(value, key)
 			}
 		}
 
-		value = isSafe
-			? callReplacerSafe(replacer, parent, key, value)
-			: replacer.call(parent, key, value)
+		value = replacer.call(parent, key, value)
 
 		switch (typeof value) {
 			case 'bigint': {
@@ -553,11 +538,7 @@ export function configure(options: StringifyOptions = {}): Stringify {
 
 				stack.push(value)
 				for (let index = 0; index < maximumPropertiesToStringify; index++) {
-					const objectKey = keys[index]
-					if (objectKey === undefined) {
-						continue
-					}
-
+					const objectKey = keys[index]!
 					const temporary = stringifyFunctionReplacer(
 						objectKey,
 						value,
@@ -609,9 +590,11 @@ export function configure(options: StringifyOptions = {}): Stringify {
 		indentation,
 	) => {
 		if (typeof value === 'object' && value) {
-			const toJson = getToJson(value)
-			if (toJson) {
-				value = isSafe ? callSafe(toJson, value, key) : toJson.call(value, key)
+			const toJson = (value as { toJSON?: unknown }).toJSON
+			if (typeof toJson === 'function') {
+				value = isSafe
+					? callSafe(toJson as UnknownFunction, value, key)
+					: (toJson as UnknownFunction).call(value, key)
 			}
 		}
 
@@ -670,7 +653,7 @@ export function configure(options: StringifyOptions = {}): Stringify {
 					for (; index < maximumValuesToStringify - 1; index++) {
 						const temporary = stringifyArrayReplacer(
 							String(index),
-							getProperty(value, index),
+							value[index],
 							stack,
 							replacer,
 							spacer,
@@ -682,7 +665,7 @@ export function configure(options: StringifyOptions = {}): Stringify {
 
 					const temporary = stringifyArrayReplacer(
 						String(index),
-						getProperty(value, index),
+						value[index],
 						stack,
 						replacer,
 						spacer,
@@ -714,7 +697,7 @@ export function configure(options: StringifyOptions = {}): Stringify {
 				for (const objectKey of replacer) {
 					const temporary = stringifyArrayReplacer(
 						objectKey,
-						getProperty(value, objectKey),
+						(value as Record<string, unknown>)[objectKey],
 						stack,
 						replacer,
 						spacer,
@@ -775,9 +758,11 @@ export function configure(options: StringifyOptions = {}): Stringify {
 					return 'null'
 				}
 
-				const toJson = getToJson(value)
-				if (toJson) {
-					value = isSafe ? callSafe(toJson, value, key) : toJson.call(value, key)
+				const toJson = (value as { toJSON?: unknown }).toJSON
+				if (typeof toJson === 'function') {
+					value = isSafe
+						? callSafe(toJson as UnknownFunction, value, key)
+						: (toJson as UnknownFunction).call(value, key)
 					// Prevent calling `toJSON` again.
 					if (typeof value !== 'object') {
 						return stringifyIndent(key, value, stack, spacer, indentation)
@@ -812,7 +797,7 @@ export function configure(options: StringifyOptions = {}): Stringify {
 					for (; index < maximumValuesToStringify - 1; index++) {
 						const temporary = stringifyIndent(
 							String(index),
-							getProperty(value, index),
+							value[index],
 							stack,
 							spacer,
 							indentation,
@@ -821,13 +806,7 @@ export function configure(options: StringifyOptions = {}): Stringify {
 						result += join
 					}
 
-					const temporary = stringifyIndent(
-						String(index),
-						getProperty(value, index),
-						stack,
-						spacer,
-						indentation,
-					)
+					const temporary = stringifyIndent(String(index), value[index], stack, spacer, indentation)
 					result += temporary ?? 'null'
 					if (value.length > maximumBreadth) {
 						const removedKeys = value.length - maximumBreadth
@@ -855,7 +834,8 @@ export function configure(options: StringifyOptions = {}): Stringify {
 				let separator = ''
 				let maximumPropertiesToStringify = Math.min(keyLength, maximumBreadth)
 				if (isTypedArrayWithEntries(value)) {
-					const length = getLength(value) ?? 0
+					const rawLength = (value as { length?: unknown }).length
+					const length = typeof rawLength === 'number' ? rawLength : 0
 					result += stringifyTypedArray(value, join, maximumBreadth, bigint)
 					keys = keys.slice(length)
 					maximumPropertiesToStringify -= length
@@ -868,14 +848,10 @@ export function configure(options: StringifyOptions = {}): Stringify {
 
 				stack.push(value)
 				for (let index = 0; index < maximumPropertiesToStringify; index++) {
-					const objectKey = keys[index]
-					if (objectKey === undefined) {
-						continue
-					}
-
+					const objectKey = keys[index]!
 					const temporary = stringifyIndent(
 						objectKey,
-						getProperty(value, objectKey),
+						(value as Record<string, unknown>)[objectKey],
 						stack,
 						spacer,
 						indentation,
@@ -916,40 +892,26 @@ export function configure(options: StringifyOptions = {}): Stringify {
 
 	let stringifySimple: RecursiveSerializer = (key, value, stack) => {
 		switch (typeof value) {
-			case 'bigint': {
-				if (bigint !== false) {
-					return bigint === 'string' ? `"${String(value)}"` : String(value)
-				}
-
-				return fail ? fail(value) : undefined
-			}
-
-			case 'boolean': {
-				return value ? 'true' : 'false'
-			}
-
-			case 'function': {
-				return fail ? fail(value) : undefined
-			}
-
-			case 'number': {
-				return Number.isFinite(value) ? String(value) : fail ? fail(value) : 'null'
+			case 'string': {
+				return stringifyString(value)
 			}
 
 			case 'object': {
-				if (!value) {
+				if (value === null) {
 					return 'null'
 				}
 
-				const toJson = getToJson(value)
-				if (toJson) {
-					value = isSafe ? callSafe(toJson, value, key) : toJson.call(value, key)
+				const toJson = (value as { toJSON?: unknown }).toJSON
+				if (typeof toJson === 'function') {
+					value = isSafe
+						? callSafe(toJson as UnknownFunction, value, key)
+						: (toJson as UnknownFunction).call(value, key)
 					// Prevent calling `toJSON` again.
 					if (typeof value !== 'object') {
 						return stringifySimple(key, value, stack)
 					}
 
-					if (!value) {
+					if (value === null) {
 						return 'null'
 					}
 				}
@@ -959,7 +921,8 @@ export function configure(options: StringifyOptions = {}): Stringify {
 				}
 
 				let result = ''
-				const length = getLength(value)
+				const rawLength = (value as { length?: unknown }).length
+				const length = typeof rawLength === 'number' ? rawLength : undefined
 				const hasLength = length !== undefined
 				if (hasLength && Array.isArray(value)) {
 					if (value.length === 0) {
@@ -974,12 +937,12 @@ export function configure(options: StringifyOptions = {}): Stringify {
 					const maximumValuesToStringify = Math.min(value.length, maximumBreadth)
 					let index = 0
 					for (; index < maximumValuesToStringify - 1; index++) {
-						const temporary = stringifySimple(String(index), getProperty(value, index), stack)
+						const temporary = stringifySimple(String(index), value[index], stack)
 						result += temporary ?? 'null'
 						result += ','
 					}
 
-					const temporary = stringifySimple(String(index), getProperty(value, index), stack)
+					const temporary = stringifySimple(String(index), value[index], stack)
 					result += temporary ?? 'null'
 					if (value.length > maximumBreadth) {
 						const removedKeys = value.length - maximumBreadth
@@ -1015,12 +978,12 @@ export function configure(options: StringifyOptions = {}): Stringify {
 
 				stack.push(value)
 				for (let index = 0; index < maximumPropertiesToStringify; index++) {
-					const objectKey = keys[index]
-					if (objectKey === undefined) {
-						continue
-					}
-
-					const temporary = stringifySimple(objectKey, getProperty(value, objectKey), stack)
+					const objectKey = keys[index]!
+					const temporary = stringifySimple(
+						objectKey,
+						(value as Record<string, unknown>)[objectKey],
+						stack,
+					)
 					if (temporary !== undefined) {
 						result += `${separator}${stringifyString(objectKey)}:${temporary}`
 						separator = ','
@@ -1036,16 +999,29 @@ export function configure(options: StringifyOptions = {}): Stringify {
 				return `{${result}}`
 			}
 
-			case 'string': {
-				return stringifyString(value)
+			case 'number': {
+				return Number.isFinite(value) ? String(value) : fail ? fail(value) : 'null'
 			}
 
-			case 'symbol': {
-				return fail ? fail(value) : undefined
+			case 'boolean': {
+				return value ? 'true' : 'false'
 			}
 
 			case 'undefined': {
 				return OMITTED_VALUE
+			}
+
+			case 'bigint': {
+				if (bigint !== false) {
+					return bigint === 'string' ? `"${String(value)}"` : String(value)
+				}
+
+				return fail ? fail(value) : undefined
+			}
+
+			case 'function':
+			case 'symbol': {
+				return fail ? fail(value) : undefined
 			}
 		}
 	}
@@ -1057,8 +1033,8 @@ export function configure(options: StringifyOptions = {}): Stringify {
 		stringifySimple = makeSafeSerializer(stringifySimple)
 	}
 
-	const serializer: Serializer = (value, replacer, space) => {
-		if (replacer !== undefined || space !== undefined) {
+	const serializer: Serializer = function (value, replacer, space) {
+		if (arguments.length > 1) {
 			let spacer = ''
 			if (typeof space === 'number') {
 				spacer = ' '.repeat(Math.min(space, 10))
@@ -1067,7 +1043,8 @@ export function configure(options: StringifyOptions = {}): Stringify {
 			}
 
 			if (typeof replacer === 'function') {
-				return stringifyFunctionReplacer('', { '': value }, [], replacer, spacer, '')
+				const activeReplacer = isSafe ? makeSafeReplacer(replacer) : replacer
+				return stringifyFunctionReplacer('', { '': value }, [], activeReplacer, spacer, '')
 			}
 
 			if (Array.isArray(replacer)) {

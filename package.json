@@ -40,14 +40,14 @@
 		"dist"
 	],
 	"scripts": {
-		"bench": "vitest bench --run",
-		"bench:baseline": "vitest bench --run --outputJson test/benchmarks/baseline.json",
-		"bench:compare": "vitest bench --run --compare test/benchmarks/baseline.json",
+		"bench": "pnpm build && vitest bench --run",
+		"bench:baseline": "pnpm build && vitest bench --run --outputJson test/benchmarks/baseline.json",
+		"bench:compare": "pnpm build && vitest bench --run --compare test/benchmarks/baseline.json --outputJson test/benchmarks/compare.json",
 		"build": "tsdown",
 		"clean": "shx rm -f pnpm-lock.yaml && git clean -fdX -e !.claude/",
 		"fix": "ksc fix",
 		"lint": "ksc lint",
-		"release": "bumpp --commit 'Release: %s' && pnpm build && NPM_AUTH_TOKEN=$(op read 'op://Personal/npm/token') && pnpm publish",
+		"release": "bumpp --preid fork --commit 'Release: %s' && pnpm build && NPM_AUTH_TOKEN=$(op read 'op://Personal/npm/token') && pnpm publish --tag latest",
 		"test": "vitest run"
 	},
 	"devDependencies": {
@@ -63,6 +63,7 @@
 		"json-stable-stringify": "^1.3.0",
 		"json-stringify-deterministic": "^1.0.14",
 		"publint": "^0.3.21",
+		"safe-stable-stringify": "^2.5.0",
 		"shx": "^0.4.0",
 		"tsdown": "^0.22.12",
 		"typescript": "~6.0.3",
@@ -77,5 +78,8 @@
 			"name": "node",
 			"version": ">=24.16.0"
 		}
+	},
+	"publishConfig": {
+		"access": "public"
 	}
 }

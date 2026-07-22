@@ -5,12 +5,25 @@ import fasterStableStringify from 'faster-stable-stringify'
 import fastestStableStringify from 'fastest-stable-stringify'
 import jsonStableStringify from 'json-stable-stringify'
 import jsonStringifyDeterministic from 'json-stringify-deterministic'
+import upstreamStringify from 'safe-stable-stringify'
 import { bench, describe } from 'vitest'
-import { stringify } from '../src/index.ts'
-import { benchmarkFixture } from './benchmark-fixture.ts'
+import { createBenchmarkFixture } from './benchmark-fixture.ts'
 
 type MutableRecord = Record<string, unknown>
+type SafeStableStringifier = (
+	value: unknown,
+	replacer?: ((key: string, value: unknown) => unknown) | Array<number | string>,
+	space?: number | string,
+) => unknown
+type SafeStableModule = {
+	configure: (options: { deterministic: boolean }) => SafeStableStringifier
+}
 type Stringifier = (value: unknown) => unknown
+
+const localBuildUrl = new URL('../dist/index.js', import.meta.url)
+const { configure: configureLocalStringify } = (await import(
+	/* @vite-ignore */ localBuildUrl.href
+)) as SafeStableModule
 
 const array = Array.from({ length: 10 }, (_value, index) => index)
 const simpleObject = { array }
@@ -21,7 +34,7 @@ circularObject.array = array
 
 const deepObject: MutableRecord = {
 	array,
-	data: benchmarkFixture,
+	data: createBenchmarkFixture(),
 	name: 'safe-stable-stringify',
 }
 const deepLevelOne: MutableRecord = structuredClone(deepObject)
@@ -47,45 +60,56 @@ const benchmarkCases = [
 	{ name: 'deep circular', value: deepCircularObject },
 ]
 
-const configuredStringify = stringify.configure({ deterministic: true })
+const safeStableImplementations: ReadonlyArray<readonly [string, SafeStableStringifier]> = [
+	['@kitschpatrol/safe-stable-stringify', configureLocalStringify({ deterministic: true })],
+	['safe-stable-stringify', upstreamStringify.configure({ deterministic: true })],
+]
 const identityReplacer = (_key: string, value: unknown): unknown => value
 
-function addCaseBenchmarks(name: string, serialize: (value: unknown) => unknown): void {
-	describe(name, () => {
-		for (const benchmarkCase of benchmarkCases) {
-			bench(benchmarkCase.name, () => {
-				serialize(benchmarkCase.value)
-			})
-		}
-	})
+function addCaseBenchmarks(
+	name: string,
+	serialize: (implementation: SafeStableStringifier, value: unknown) => unknown,
+): void {
+	for (const benchmarkCase of benchmarkCases) {
+		describe(`${name}: ${benchmarkCase.name}`, () => {
+			for (const [implementationName, implementation] of safeStableImplementations) {
+				bench(implementationName, () => {
+					serialize(implementation, benchmarkCase.value)
+				})
+			}
+		})
+	}
 }
 
-addCaseBenchmarks('simple', (value) => configuredStringify(value))
-addCaseBenchmarks('function replacer', (value) => configuredStringify(value, identityReplacer))
-addCaseBenchmarks('array replacer', (value) => configuredStringify(value, ['array']))
-addCaseBenchmarks('function replacer with indentation', (value) =>
-	configuredStringify(value, identityReplacer, 2),
+addCaseBenchmarks('simple', (implementation, value) => implementation(value))
+addCaseBenchmarks('function replacer', (implementation, value) =>
+	implementation(value, identityReplacer),
 )
-addCaseBenchmarks('array replacer with indentation', (value) =>
-	configuredStringify(value, ['array'], 2),
+addCaseBenchmarks('array replacer', (implementation, value) => implementation(value, ['array']))
+addCaseBenchmarks('function replacer with indentation', (implementation, value) =>
+	implementation(value, identityReplacer, 2),
 )
-addCaseBenchmarks('indentation', (value) => configuredStringify(value, undefined, 2))
+addCaseBenchmarks('array replacer with indentation', (implementation, value) =>
+	implementation(value, ['array'], 2),
+)
+addCaseBenchmarks('indentation', (implementation, value) => implementation(value, undefined, 2))
 
-const comparisonImplementations: Record<string, Stringifier> = {
-	'fast-json-stable-stringify': fastJsonStableStringify,
-	'fast-safe-stringify': fastSafeStringify.stable,
-	'fast-stable-stringify': fastStableStringify,
-	'faster-stable-stringify': fasterStableStringify,
-	'fastest-stable-stringify': fastestStableStringify,
-	'json-stable-stringify': jsonStableStringify,
-	'json-stringify-deterministic': jsonStringifyDeterministic,
-	'safe-stable-stringify': stringify,
-}
+const implementationComparisonFixture = createBenchmarkFixture()
+const comparisonImplementations: ReadonlyArray<readonly [string, Stringifier]> = [
+	['fast-json-stable-stringify', fastJsonStableStringify],
+	['fast-safe-stringify', fastSafeStringify.stable],
+	['fast-stable-stringify', fastStableStringify],
+	['faster-stable-stringify', fasterStableStringify],
+	['fastest-stable-stringify', fastestStableStringify],
+	['json-stable-stringify', jsonStableStringify],
+	['json-stringify-deterministic', jsonStringifyDeterministic],
+	...safeStableImplementations,
+]
 
 describe('implementation comparison', () => {
-	for (const [name, implementation] of Object.entries(comparisonImplementations)) {
+	for (const [name, implementation] of comparisonImplementations) {
 		bench(name, () => {
-			implementation(benchmarkFixture)
+			implementation(implementationComparisonFixture)
 		})
 	}
 })
