@@ -1,3 +1,6 @@
+/* eslint-disable test/expect-expect -- Benchmark tests measure throughput instead of asserting behavior. */
+
+import type { TestContext } from 'vitest'
 import fastJsonStableStringify from 'fast-json-stable-stringify'
 import fastSafeStringify from 'fast-safe-stringify'
 import fastStableStringify from 'fast-stable-stringify'
@@ -6,9 +9,11 @@ import fastestStableStringify from 'fastest-stable-stringify'
 import jsonStableStringify from 'json-stable-stringify'
 import jsonStringifyDeterministic from 'json-stringify-deterministic'
 import upstreamStringify from 'safe-stable-stringify'
-import { bench, describe } from 'vitest'
+import { test } from 'vitest'
 import { createBenchmarkFixture } from './benchmark-fixture.ts'
 
+type Bench = TestContext['bench']
+type BenchRegistration = ReturnType<Bench>
 type MutableRecord = Record<string, unknown>
 type SafeStableStringifier = (
 	value: unknown,
@@ -60,23 +65,61 @@ const benchmarkCases = [
 	{ name: 'deep circular', value: deepCircularObject },
 ]
 
+const localImplementationName = '@kitschpatrol/safe-stable-stringify'
 const safeStableImplementations: ReadonlyArray<readonly [string, SafeStableStringifier]> = [
-	['@kitschpatrol/safe-stable-stringify', configureLocalStringify({ deterministic: true })],
+	[localImplementationName, configureLocalStringify({ deterministic: true })],
 	['safe-stable-stringify', upstreamStringify.configure({ deterministic: true })],
 ]
 const identityReplacer = (_key: string, value: unknown): unknown => value
+
+// `write` stores the local implementation's results, `compare` adds the stored results to each comparison
+const baselineMode = process.env.BENCH_BASELINE
+const nonAlphanumericPattern = /[^a-z\d]+/gv
+
+function getBaselinePath(testName: string): string {
+	return `./test/benchmarks/baseline/${testName.toLowerCase().replaceAll(nonAlphanumericPattern, '-')}.json`
+}
+
+/**
+ * Compare implementations within a single benchmark test, recording or
+ * replaying the local implementation's baseline according to `BENCH_BASELINE`.
+ */
+async function compareImplementations(
+	bench: Bench,
+	testName: string,
+	implementations: ReadonlyArray<readonly [string, () => void]>,
+): Promise<void> {
+	const baselinePath = getBaselinePath(testName)
+	const registrations: BenchRegistration[] = implementations.map(([name, run]) =>
+		name === localImplementationName && baselineMode === 'write'
+			? bench(name, { writeResult: baselinePath }, run)
+			: bench(name, run),
+	)
+
+	if (baselineMode === 'compare') {
+		registrations.push(bench.from(`${localImplementationName} (baseline)`, baselinePath))
+	}
+
+	await bench.compare(...registrations)
+}
 
 function addCaseBenchmarks(
 	name: string,
 	serialize: (implementation: SafeStableStringifier, value: unknown) => unknown,
 ): void {
 	for (const benchmarkCase of benchmarkCases) {
-		describe(`${name}: ${benchmarkCase.name}`, () => {
-			for (const [implementationName, implementation] of safeStableImplementations) {
-				bench(implementationName, () => {
-					serialize(implementation, benchmarkCase.value)
-				})
-			}
+		const testName = `${name}: ${benchmarkCase.name}`
+		test(testName, async ({ bench }) => {
+			await compareImplementations(
+				bench,
+				testName,
+				safeStableImplementations.map(([implementationName, implementation]) => [
+					implementationName,
+					() => {
+						serialize(implementation, benchmarkCase.value)
+					},
+				]),
+			)
 		})
 	}
 }
@@ -106,10 +149,15 @@ const comparisonImplementations: ReadonlyArray<readonly [string, Stringifier]> =
 	...safeStableImplementations,
 ]
 
-describe('implementation comparison', () => {
-	for (const [name, implementation] of comparisonImplementations) {
-		bench(name, () => {
-			implementation(implementationComparisonFixture)
-		})
-	}
+test('implementation comparison', async ({ bench }) => {
+	await compareImplementations(
+		bench,
+		'implementation comparison',
+		comparisonImplementations.map(([name, implementation]) => [
+			name,
+			() => {
+				implementation(implementationComparisonFixture)
+			},
+		]),
+	)
 })

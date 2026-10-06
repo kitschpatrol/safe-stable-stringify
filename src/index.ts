@@ -98,11 +98,9 @@ function getLength(value: unknown): number | undefined {
 function stringifyString(value: string): string {
 	// These thresholds performed well in benchmarks against V8 8.0 and remain cheaper than
 	// calling the native serializer for the common case.
-	if (value.length < 5000 && !STRING_ESCAPE_SEQUENCES.test(value)) {
-		return `"${value}"`
-	}
-
-	return JSON.stringify(value)
+	return value.length < 5000 && !STRING_ESCAPE_SEQUENCES.test(value)
+		? `"${value}"`
+		: JSON.stringify(value)
 }
 
 function sortStrings(values: string[], comparator?: Comparator): string[] {
@@ -331,6 +329,7 @@ function getUndefined(): undefined {
 	// Intentionally return undefined.
 }
 
+// eslint-disable-next-line unicorn/no-unsafe-json-serialization -- Intentionally borrows the native omitted-value result.
 const OMITTED_VALUE = JSON.stringify(undefined)
 
 function getErrorMessage(error: unknown, name?: string): string {
@@ -547,10 +546,12 @@ export function configure(options: StringifyOptions = {}): Stringify {
 						spacer,
 						indentation,
 					)
-					if (temporary !== undefined) {
-						result += `${separator}${stringifyString(objectKey)}:${whitespace}${temporary}`
-						separator = join
+					if (temporary === undefined) {
+						continue
 					}
+
+					result += `${separator}${stringifyString(objectKey)}:${whitespace}${temporary}`
+					separator = join
 				}
 
 				if (keyLength > maximumBreadth) {
@@ -703,10 +704,12 @@ export function configure(options: StringifyOptions = {}): Stringify {
 						spacer,
 						indentation,
 					)
-					if (temporary !== undefined) {
-						result += `${separator}${stringifyString(objectKey)}:${whitespace}${temporary}`
-						separator = join
+					if (temporary === undefined) {
+						continue
 					}
+
+					result += `${separator}${stringifyString(objectKey)}:${whitespace}${temporary}`
+					separator = join
 				}
 
 				if (spacer !== '' && separator.length > 1) {
@@ -856,10 +859,12 @@ export function configure(options: StringifyOptions = {}): Stringify {
 						spacer,
 						indentation,
 					)
-					if (temporary !== undefined) {
-						result += `${separator}${stringifyString(objectKey)}: ${temporary}`
-						separator = join
+					if (temporary === undefined) {
+						continue
 					}
+
+					result += `${separator}${stringifyString(objectKey)}: ${temporary}`
+					separator = join
 				}
 
 				if (keyLength > maximumBreadth) {
@@ -984,10 +989,12 @@ export function configure(options: StringifyOptions = {}): Stringify {
 						(value as Record<string, unknown>)[objectKey],
 						stack,
 					)
-					if (temporary !== undefined) {
-						result += `${separator}${stringifyString(objectKey)}:${temporary}`
-						separator = ','
+					if (temporary === undefined) {
+						continue
 					}
+
+					result += `${separator}${stringifyString(objectKey)}:${temporary}`
+					separator = ','
 				}
 
 				if (keyLength > maximumBreadth) {

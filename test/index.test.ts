@@ -648,6 +648,7 @@ test('array nulls, array replacer and indentation', (assert) => {
 
 test('array and array replacer', (assert) => {
 	const object = [JSON_NULL, JSON_NULL, 't', Infinity, true, false, [], {}]
+	// eslint-disable-next-line unicorn/no-unsafe-json-serialization -- Native output is the expected baseline for non-finite values.
 	const expected = JSON.stringify(object, [2])
 	const actual = stringify(object, [2])
 	assert.equal(actual, expected)
@@ -887,6 +888,7 @@ test('check typed arrays', (assert) => {
 		{},
 		Symbol('null'),
 	]
+	// eslint-disable-next-line unicorn/no-unsafe-json-serialization -- Native output is the expected baseline for non-finite values.
 	const expected = JSON.stringify(object)
 	const actual = stringify(object)
 	assert.equal(actual, expected)

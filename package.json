@@ -41,42 +41,44 @@
 	],
 	"scripts": {
 		"bench": "pnpm build && vitest bench --run",
-		"bench:baseline": "pnpm build && vitest bench --run --outputJson test/benchmarks/baseline.json",
-		"bench:compare": "pnpm build && vitest bench --run --compare test/benchmarks/baseline.json --outputJson test/benchmarks/compare.json",
+		"bench:baseline": "pnpm build && BENCH_BASELINE=write vitest bench --run",
+		"bench:compare": "pnpm build && BENCH_BASELINE=compare vitest bench --run --reporter=default --reporter=json --outputFile=test/benchmarks/compare.json",
 		"build": "tsdown",
-		"clean": "shx rm -f pnpm-lock.yaml && git clean -fdX -e !.claude/",
+		"clean-deep": "shx rm -f pnpm-lock.yaml && git clean -fdX -e !.claude/",
 		"fix": "ksc fix",
 		"lint": "ksc lint",
-		"release": "bumpp --preid fork --commit 'Release: %s' && pnpm build && NPM_AUTH_TOKEN=$(op read 'op://Personal/npm/token') && pnpm publish --tag latest",
+		"prepare": "skills experimental_sync -y -f",
+		"release": "bumpp --preid fork --commit 'Release: %s' && pnpm build && NPM_TOKEN=$(op read 'op://Personal/npm/token') && pnpm publish --tag latest",
 		"test": "vitest run"
 	},
 	"devDependencies": {
 		"@arethetypeswrong/core": "^0.18.5",
-		"@kitschpatrol/shared-config": "^8.4.0",
-		"@types/node": "~24.13.3",
-		"bumpp": "^12.0.0",
+		"@kitschpatrol/shared-config": "^8.12.1",
+		"@types/node": "~24.13.6",
+		"bumpp": "^12.3.0",
 		"fast-json-stable-stringify": "^2.1.0",
 		"fast-safe-stringify": "^2.1.1",
 		"fast-stable-stringify": "^1.0.0",
 		"faster-stable-stringify": "^1.0.0",
 		"fastest-stable-stringify": "^2.0.2",
 		"json-stable-stringify": "^1.3.0",
-		"json-stringify-deterministic": "^1.0.14",
-		"publint": "^0.3.21",
+		"json-stringify-deterministic": "^1.0.16",
+		"publint": "^0.3.25",
 		"safe-stable-stringify": "^2.5.0",
 		"shx": "^0.4.0",
-		"tsdown": "^0.22.12",
+		"skills": "^1.7.0",
+		"tsdown": "^0.23.0",
 		"typescript": "~6.0.3",
-		"vitest": "^4.1.10"
+		"vitest": "^5.0.3"
 	},
-	"packageManager": "pnpm@11.15.0",
+	"packageManager": "pnpm@12.9.1",
 	"engines": {
-		"node": ">=20.19.0"
+		"node": "^20.19.0 || ^22.0.0 || ^24.0.0 || >=26.0.0"
 	},
 	"devEngines": {
 		"runtime": {
 			"name": "node",
-			"version": ">=24.16.0"
+			"version": "^24.16.0 || >=26.3.0"
 		}
 	},
 	"publishConfig": {

@@ -17,8 +17,19 @@ type BenchmarkGroup = {
 	fullName: string
 }
 
+type BenchmarkTask = {
+	fromStore?: boolean
+	name: string
+	throughput: { mean: number }
+}
+
 type BenchmarkReport = {
-	files: Array<{ groups: BenchmarkGroup[] }>
+	testResults: Array<{
+		assertionResults: Array<{
+			benchmarks?: Array<{ tasks: BenchmarkTask[] }>
+			fullName: string
+		}>
+	}>
 }
 
 const localPackageName = '@kitschpatrol/safe-stable-stringify'
@@ -60,20 +71,29 @@ function formatTableLabel(value: string): string {
 }
 
 function formatImplementationLink(name: string): string {
-	const implementationRepoUrl = implementationRepositories[name]
+	const implementationRepositoryUrl = implementationRepositories[name]
 
-	if (implementationRepoUrl === undefined) {
+	if (implementationRepositoryUrl === undefined) {
 		throw new Error(`No repository configured for benchmark implementation "${name}".`)
 	}
 
 	const qualifier = name === upstreamPackageName ? ' (upstream)' : ''
 
-	return `[\`${name}\`](${implementationRepoUrl})${qualifier}`
+	return `[\`${name}\`](${implementationRepositoryUrl})${qualifier}`
 }
 
 async function performance() {
 	const report = JSON.parse(await readFile(benchmarkReportUrl, 'utf8')) as BenchmarkReport
-	const groups = report.files.flatMap((file) => file.groups)
+	// Stored baseline results replayed via `bench.from()` are not part of the current run
+	const groups: BenchmarkGroup[] = report.testResults
+		.flatMap((file) => file.assertionResults)
+		.map((test) => ({
+			benchmarks: (test.benchmarks ?? [])
+				.flatMap((benchmark) => benchmark.tasks)
+				.filter((task) => task.fromStore !== true)
+				.map((task) => ({ hz: task.throughput.mean, name: task.name })),
+			fullName: test.fullName,
+		}))
 	const implementationGroup = groups.find((group) => getTaskName(group) === comparisonGroupName)
 
 	if (implementationGroup === undefined) {
@@ -104,6 +124,7 @@ async function performance() {
 	const local = getBenchmark(implementationGroup, localPackageName)
 	const implementationRows = implementationGroup.benchmarks
 		.filter((benchmark) => benchmark !== local)
+		.toSorted((left, right) => left.name.localeCompare(right.name))
 		.map(
 			(benchmark) =>
 				`| ${formatImplementationLink(benchmark.name)} | ${formatRelativeSpeed(local, benchmark)} |`,
