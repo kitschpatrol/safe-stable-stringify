@@ -48,7 +48,7 @@
 		"fix": "ksc fix",
 		"lint": "ksc lint",
 		"prepare": "skills experimental_sync -y -f",
-		"release": "bumpp --preid fork --commit 'Release: %s' && pnpm build && NPM_TOKEN=$(op read 'op://Personal/npm/token') && pnpm publish --tag latest",
+		"release": "bumpp --preid fork --commit 'Release: %s' && pnpm build && pnpm publish --tag latest --otp $(op item get npm --otp)",
 		"test": "vitest run"
 	},
 	"devDependencies": {
