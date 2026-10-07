@@ -1,6 +1,6 @@
 {
 	"name": "@kitschpatrol/safe-stable-stringify",
-	"version": "2.5.0-fork.1",
+	"version": "2.5.0-fork.2",
 	"description": "Fork of safe-stable-stringify with an ESM fix.",
 	"keywords": [
 		"serialize",
