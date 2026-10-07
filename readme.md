@@ -84,7 +84,7 @@ Values show the throughput of `@kitschpatrol/safe-stable-stringify` relative to 
 
 The original implementation was created by [Ruben Bridgewater](https://github.com/BridgeAR).
 
-The upstream project is sponsored by [MaibornWolff](https://www.maibornwolff.de/) and [nearForm](http://nearform.com/).
+The upstream project is sponsored by [MaibornWolff](https://www.maibornwolff.de/) and [nearForm](https://nearform.com/).
 
 ## License
 
