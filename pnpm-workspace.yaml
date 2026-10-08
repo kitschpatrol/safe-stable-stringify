@@ -1,5 +1,16 @@
+allowBuilds:
+  unrs-resolver: true
 packages:
   - '.'
+peerDependencyRules:
+  allowedVersions:
+    # Remove once the installed version declares ESLint 10 support.
+    # https://github.com/jsx-eslint/eslint-plugin-jsx-a11y/issues/1075
+    # https://github.com/jsx-eslint/eslint-plugin-jsx-a11y/pull/1081
+    eslint-plugin-jsx-a11y@6>eslint: ^10.0.0
+    # @types/node tracks the published Node.js floor (20.19), below the range vitest
+    # declares for its own runtime. Type checks pass with this combination.
+    vitest@5>@types/node: ~20.19.0
 publicHoistPattern:
   - '@kitschpatrol/repo-config'
   - '@kitschpatrol/typescript-config'
@@ -11,13 +22,3 @@ publicHoistPattern:
   - '*remark*'
   - '*stylelint*'
   - 'case-police'
-allowBuilds:
-  esbuild: true
-  oxc-resolver: true
-  unrs-resolver: true
-peerDependencyRules:
-  allowedVersions:
-    # Remove once the installed version declares ESLint 10 support.
-    # https://github.com/jsx-eslint/eslint-plugin-jsx-a11y/issues/1075
-    # https://github.com/jsx-eslint/eslint-plugin-jsx-a11y/pull/1081
-    eslint-plugin-jsx-a11y@6>eslint: ^10.0.0

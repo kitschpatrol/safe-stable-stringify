@@ -53,8 +53,8 @@
 	},
 	"devDependencies": {
 		"@arethetypeswrong/core": "^0.18.5",
-		"@kitschpatrol/shared-config": "^8.12.1",
-		"@types/node": "~24.13.6",
+		"@kitschpatrol/shared-config": "^8.13.1",
+		"@types/node": "~20.19.43",
 		"bumpp": "^12.3.0",
 		"fast-json-stable-stringify": "^2.1.0",
 		"fast-safe-stringify": "^2.1.1",
@@ -66,12 +66,12 @@
 		"publint": "^0.3.25",
 		"safe-stable-stringify": "^2.5.0",
 		"shx": "^0.4.0",
-		"skills": "^1.7.0",
-		"tsdown": "^0.23.0",
+		"skills": "^1.7.2",
+		"tsdown": "^0.23.1",
 		"typescript": "~6.0.3",
 		"vitest": "^5.0.3"
 	},
-	"packageManager": "pnpm@12.9.1",
+	"packageManager": "pnpm@12.11.2",
 	"engines": {
 		"node": "^20.19.0 || ^22.0.0 || ^24.0.0 || >=26.0.0"
 	},
