@@ -44,16 +44,15 @@
 		"bench:baseline": "pnpm build && BENCH_BASELINE=write vitest bench --run",
 		"bench:compare": "pnpm build && BENCH_BASELINE=compare vitest bench --run --reporter=default --reporter=json --outputFile=test/benchmarks/compare.json",
 		"build": "tsdown",
-		"clean-deep": "shx rm -f pnpm-lock.yaml && git clean -fdX -e !.claude/",
+		"clean-deep": "shx rm -f pnpm-lock.yaml && git clean -fdX",
 		"fix": "ksc fix",
 		"lint": "ksc lint",
-		"prepare": "skills experimental_sync -y -f",
 		"release": "bumpp --preid fork --commit 'Release: %s' && pnpm build && pnpm publish --tag latest --otp $(op item get npm --otp)",
 		"test": "vitest run"
 	},
 	"devDependencies": {
 		"@arethetypeswrong/core": "^0.18.5",
-		"@kitschpatrol/shared-config": "^8.13.1",
+		"@kitschpatrol/shared-config": "^8.14.0",
 		"@types/node": "~20.19.43",
 		"bumpp": "^12.3.0",
 		"fast-json-stable-stringify": "^2.1.0",
@@ -66,12 +65,11 @@
 		"publint": "^0.3.25",
 		"safe-stable-stringify": "^2.5.0",
 		"shx": "^0.4.0",
-		"skills": "^1.7.2",
 		"tsdown": "^0.23.1",
 		"typescript": "~6.0.3",
 		"vitest": "^5.0.3"
 	},
-	"packageManager": "pnpm@12.11.2",
+	"packageManager": "pnpm@12.15.0",
 	"engines": {
 		"node": "^20.19.0 || ^22.0.0 || ^24.0.0 || >=26.0.0"
 	},

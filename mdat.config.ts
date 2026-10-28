@@ -17,21 +17,6 @@ type BenchmarkGroup = {
 	fullName: string
 }
 
-type BenchmarkTask = {
-	fromStore?: boolean
-	name: string
-	throughput: { mean: number }
-}
-
-type BenchmarkReport = {
-	testResults: Array<{
-		assertionResults: Array<{
-			benchmarks?: Array<{ tasks: BenchmarkTask[] }>
-			fullName: string
-		}>
-	}>
-}
-
 const localPackageName = '@kitschpatrol/safe-stable-stringify'
 const upstreamPackageName = 'safe-stable-stringify'
 const comparisonGroupName = 'implementation comparison'
@@ -83,6 +68,19 @@ function formatImplementationLink(name: string): string {
 }
 
 async function performance() {
+	type BenchmarkTask = {
+		fromStore?: boolean
+		name: string
+		throughput: { mean: number }
+	}
+	type BenchmarkReport = {
+		testResults: Array<{
+			assertionResults: Array<{
+				benchmarks?: Array<{ tasks: BenchmarkTask[] }>
+				fullName: string
+			}>
+		}>
+	}
 	const report = JSON.parse(await readFile(benchmarkReportUrl, 'utf8')) as BenchmarkReport
 	// Stored baseline results replayed via `bench.from()` are not part of the current run
 	const groups: BenchmarkGroup[] = report.testResults

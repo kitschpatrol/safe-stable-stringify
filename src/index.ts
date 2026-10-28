@@ -4,35 +4,6 @@ type NullValue = Exclude<ReturnType<RegExp['exec']>, RegExpExecArray>
 type UnknownFunction = (...args: unknown[]) => unknown
 type Comparator = (left: string, right: string) => number
 type ReplacerFunction = (this: unknown, key: string, value: unknown) => unknown
-type Serializer = (
-	value: unknown,
-	replacer?: Replacer,
-	space?: number | string,
-) => string | undefined
-type RecursiveSerializer = (key: string, value: unknown, stack: unknown[]) => string | undefined
-type IndentedSerializer = (
-	key: string,
-	value: unknown,
-	stack: unknown[],
-	spacer: string,
-	indentation: string,
-) => string | undefined
-type ArrayReplacerSerializer = (
-	key: string,
-	value: unknown,
-	stack: unknown[],
-	replacer: Set<string>,
-	spacer: string,
-	indentation: string,
-) => string | undefined
-type FunctionReplacerSerializer = (
-	key: string,
-	parent: unknown,
-	stack: unknown[],
-	replacer: ReplacerFunction,
-	spacer: string,
-	indentation: string,
-) => string | undefined
 type FailFunction = (value: unknown) => never
 type CircularValueFunction = () => string | undefined
 
@@ -342,9 +313,9 @@ function getErrorMessage(error: unknown, name?: string): string {
 
 	const message = typeof rawMessage === 'string' ? rawMessage : safeErrorMessage(error)
 
-	return name !== undefined && name !== ''
-		? `Error: Stringification failed with ${name} (${message})`
-		: `Error: Stringification failed (${message})`
+	return name === undefined || name === ''
+		? `Error: Stringification failed (${message})`
+		: `Error: Stringification failed with ${name} (${message})`
 }
 
 function callSafe(method: UnknownFunction, thisArgument: unknown, input: unknown): unknown {
@@ -386,6 +357,35 @@ function makeSafeSerializer<T extends (...args: never[]) => string | undefined>(
  * Create a safe, stable stringify function with the supplied options.
  */
 export function configure(options: StringifyOptions = {}): Stringify {
+	type FunctionReplacerSerializer = (
+		key: string,
+		parent: unknown,
+		stack: unknown[],
+		replacer: ReplacerFunction,
+		spacer: string,
+		indentation: string,
+	) => string | undefined
+	type ArrayReplacerSerializer = (
+		key: string,
+		value: unknown,
+		stack: unknown[],
+		replacer: Set<string>,
+		spacer: string,
+		indentation: string,
+	) => string | undefined
+	type IndentedSerializer = (
+		key: string,
+		value: unknown,
+		stack: unknown[],
+		spacer: string,
+		indentation: string,
+	) => string | undefined
+	type RecursiveSerializer = (key: string, value: unknown, stack: unknown[]) => string | undefined
+	type Serializer = (
+		value: unknown,
+		replacer?: Replacer,
+		space?: number | string,
+	) => string | undefined
 	const normalizedOptions = { ...options }
 	const fail = getStrictOption(normalizedOptions)
 	if (fail) {

@@ -13,7 +13,6 @@ import { test } from 'vitest'
 import { createBenchmarkFixture } from './benchmark-fixture.ts'
 
 type Bench = TestContext['bench']
-type BenchRegistration = ReturnType<Bench>
 type MutableRecord = Record<string, unknown>
 type SafeStableStringifier = (
 	value: unknown,
@@ -89,6 +88,7 @@ async function compareImplementations(
 	testName: string,
 	implementations: ReadonlyArray<readonly [string, () => void]>,
 ): Promise<void> {
+	type BenchRegistration = ReturnType<Bench>
 	const baselinePath = getBaselinePath(testName)
 	const registrations: BenchRegistration[] = implementations.map(([name, run]) =>
 		name === localImplementationName && baselineMode === 'write'
