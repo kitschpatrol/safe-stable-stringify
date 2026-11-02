@@ -1,0 +1,45 @@
+upstreams:
+  - repo: BridgeAR/safe-stable-stringify
+    branch: main
+    parent: true
+
+verify: pnpm ci && pnpm build && pnpm lint && pnpm test
+extra_allowed_tools: Bash(pnpm:*)
+
+guidance: |
+  This is an intentional fork of BridgeAR/safe-stable-stringify. Incorporate
+  upstream bug fixes, performance improvements, compatible features, and
+  regression tests while preserving the fork's changes. Understand both sides
+  of conflicts and adapt upstream changes to this repository's structure.
+  If an upstream change conflicts with the fork's purpose or would break its
+  public API or existing behavior, preserve the fork's behavior and explain
+  the omitted or adapted change in the PR for maintainer review.
+
+  Preserve direct-to-browser ESM imports and the ESM-only package. Keep
+  type: module, the dist/index.js and dist/index.d.ts exports, and the neutral
+  tsdown build with declaration generation and package validation. Do not
+  restore CommonJS exports, require-based wrappers, or Node.js-only runtime
+  dependencies. Preserve the default export, named stringify and configure
+  exports, attached stringify.configure and stringify.stringify properties,
+  and public TypeScript types.
+
+  Port upstream implementation changes into src/index.ts and upstream tests
+  into the existing Vitest suite in test/index.test.ts. Keep the TypeScript
+  source and test layout instead of restoring upstream's root JavaScript
+  implementation, declaration files, ESM wrappers, or Tape test tooling.
+  Retain the existing regression coverage and add tests for imported fixes.
+
+  Preserve the @kitschpatrol/safe-stable-stringify package name, fork version
+  scheme, repository metadata, attribution, and release process. Keep pnpm,
+  @kitschpatrol/shared-config, the build and lint configuration, GitHub
+  workflows, and the fork-specific readme. Let mdat regenerate its readme
+  sections rather than editing generated content by hand. Regenerate the
+  pnpm lockfile with pnpm when dependency changes require it; do not adopt
+  upstream package metadata, release versions, or another package manager's
+  lockfile.
+
+  Keep the benchmark suite, upstream comparisons, and stored performance
+  baselines. For changes affecting serialization performance, use the existing
+  benchmark commands to check for regressions and report the results. Do not
+  overwrite stored baselines just to make a regression disappear. Run the
+  configured verification command and report any failures or uncertainty.
