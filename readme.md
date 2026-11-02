@@ -24,8 +24,7 @@ This is a fork of [BridgeAR/safe-stable-stringify](https://github.com/BridgeAR/s
 
 - Support direct-to-browser ESM imports. (Fixes an [upstream issue from 2022](https://github.com/BridgeAR/safe-stable-stringify/issues/36).)
 - Drop the CJS export.
-- Incorporate all upstream commits since the [August 2024 2.5.0 release](https://github.com/BridgeAR/safe-stable-stringify/releases/tag/v2.5.0).
-- Use upstream's `"[Circular: N]"` default circular marker, where `N` is the referenced ancestor's depth, starting at 0 for the root. Set `circularValue: '[Circular]'` to retain the previous output.
+- Match upstream 3.0.0 serialization behavior, including `"[Circular: N]"` markers with ancestor depth starting at 0 for the root. The 3.0.0 release adopts upstream's breaking changes.
 - Port to TypeScript.
 - Repository project template aligned with [kitschpatrol/create-project](https://github.com/kitschpatrol/create-project). (Massive diff, but simplifies management on my end.)
 

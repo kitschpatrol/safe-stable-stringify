@@ -5,7 +5,9 @@ type UnknownFunction = (...args: unknown[]) => unknown
 type Comparator = (left: string, right: string) => number
 type ReplacerFunction = (this: unknown, key: string, value: unknown) => unknown
 type FailFunction = (value: unknown) => never
-type CircularValueFunction = (depth: number) => string | undefined
+type CircularError = { toString: () => never }
+type SerializedValue = CircularError | string | undefined
+type CircularValueFunction = (depth: number) => SerializedValue
 
 /** A property-list or transformation function compatible with `JSON.stringify`. */
 export type Replacer = NullValue | ReadonlyArray<number | string> | ReplacerFunction | undefined
@@ -17,7 +19,7 @@ export type StringifyOptions = {
 	/**
 	 * Replacement for circular references. Defaults to `[Circular: N]`, where `N`
 	 * is the referenced ancestor's depth, starting at 0 for the root. Use `Error`
-	 * to throw or `undefined` to omit them.
+	 * to throw or `undefined` to omit them. String values must be JSON-escaped.
 	 */
 	circularValue?: ErrorConstructor | NullValue | string | undefined
 	/** Sort object keys, optionally with a custom comparator. Defaults to `true`. */
@@ -44,7 +46,8 @@ export type Stringify = {
 
 type DefaultStringify = Stringify & {
 	configure: typeof configure
-	stringify: Stringify
+	default: DefaultStringify
+	stringify: DefaultStringify
 }
 
 type NumericArray = ArrayLike<bigint | number>
@@ -55,10 +58,11 @@ type NumericArray = ArrayLike<bigint | number>
 const STRING_ESCAPE_SEQUENCES = /[\u{0}-\u{1F}\u{22}\u{5C}\u{D800}-\u{DFFF}]/v
 const JSON_NULL = /a/v.exec('b')
 const NATIVE_ESCAPE_LENGTH = getNativeEscapeLength()
-const TYPED_ARRAY_PROTOTYPE = Object.getPrototypeOf(Int8Array.prototype) as Record<
-	PropertyKey,
-	unknown
->
+// eslint-disable-next-line ts/unbound-method -- Capture the intrinsic getter; its receiver is supplied explicitly below.
+const TYPED_ARRAY_TYPE_GETTER = Object.getOwnPropertyDescriptor(
+	Object.getPrototypeOf(Int8Array.prototype),
+	Symbol.toStringTag,
+)!.get as (this: unknown) => string | undefined
 
 function getNativeEscapeLength(): number {
 	type RuntimeProcess = NullValue | undefined | { versions?: NullValue | { node?: unknown } }
@@ -67,11 +71,6 @@ function getNativeEscapeLength(): number {
 	const runtime = typeof process === 'object' ? (process as RuntimeProcess) : undefined
 	const nodeVersion = runtime ? runtime.versions?.node : undefined
 	return typeof nodeVersion === 'string' && Number(nodeVersion.split('.', 1)[0]) >= 22 ? 128 : 5000
-}
-
-function getProperty(value: unknown, key: PropertyKey): unknown {
-	// The serializer intentionally reads arbitrary user-provided values.
-	return (value as Record<PropertyKey, unknown>)[key]
 }
 
 function hasOwn(value: StringifyOptions, key: PropertyKey): boolean {
@@ -131,15 +130,11 @@ function sortStrings(values: string[], comparator?: Comparator): string[] {
 }
 
 function getTypedArrayType(value: unknown): string | undefined {
-	if (!ArrayBuffer.isView(value)) {
-		return undefined
-	}
-
 	// Read the intrinsic typed array type, ignoring subclasses, own `Symbol.toStringTag`
 	// overrides, and realm boundaries. The getter returns `undefined` for a `DataView`.
-	const type = Reflect.get(TYPED_ARRAY_PROTOTYPE, Symbol.toStringTag, value) as string | undefined
+	const type = TYPED_ARRAY_TYPE_GETTER.call(value)
 	// Empty typed arrays are serialized like ordinary empty objects.
-	return (value as { length?: number }).length === 0 ? undefined : type
+	return type === undefined || (value as { length?: number }).length === 0 ? undefined : type
 }
 
 function wrapInQuotes(value: unknown): string {
@@ -198,9 +193,14 @@ function getCircularValueOption(options: StringifyOptions): CircularValueFunctio
 		}
 
 		if (circularValue === Error || circularValue === TypeError) {
-			return () => {
-				throw new TypeError('Converting circular structure to JSON')
+			// Upstream throws when the parent serializes this marker. Deferring coercion
+			// preserves which containing object or array is replaced in safe mode.
+			const circularError: CircularError = {
+				toString() {
+					throw new TypeError('Converting circular structure to JSON')
+				},
 			}
+			return () => circularError
 		}
 
 		throw new TypeError(
@@ -361,14 +361,11 @@ function getUndefined(): undefined {
 const OMITTED_VALUE = JSON.stringify(undefined)
 
 function getErrorMessage(error: unknown, name?: string): string {
-	let rawMessage: unknown
-	try {
-		rawMessage = typeof error === 'object' && error ? getProperty(error, 'message') : undefined
-	} catch {
-		rawMessage = undefined
-	}
-
-	const message = typeof rawMessage === 'string' ? rawMessage : safeErrorMessage(error)
+	const errorWithMessage = error as NullValue | undefined | { message?: unknown }
+	const message =
+		typeof errorWithMessage?.message === 'string'
+			? errorWithMessage.message
+			: safeErrorMessage(error)
 
 	return name === undefined || name === ''
 		? `Error: Stringification failed (${message})`
@@ -383,24 +380,13 @@ function callSafe(method: UnknownFunction, thisArgument: unknown, input: unknown
 	}
 }
 
-function makeSafeReplacer(method: ReplacerFunction): ReplacerFunction {
-	return function (key, value): unknown {
+function makeSafe<T extends (...args: never[]) => unknown>(method: T, name?: string): T {
+	const safeMethod = (...input: Parameters<T>): unknown => {
 		try {
-			// The replacer must receive the same parent object as the native JSON API.
-			// eslint-disable-next-line unicorn/no-this-outside-of-class
-			return method.call(this, key, value)
-		} catch (error) {
-			return getErrorMessage(error, method.name)
-		}
-	}
-}
-
-function makeSafeSerializer<T extends (...args: never[]) => string | undefined>(method: T): T {
-	const safeMethod = (...input: Parameters<T>): string | undefined => {
-		try {
+			// Upstream invokes safe replacers without a receiver.
 			return method(...input)
 		} catch (error) {
-			return `"${getErrorMessage(error)}"`
+			return name === undefined ? `"${getErrorMessage(error, name)}"` : getErrorMessage(error, name)
 		}
 	}
 
@@ -413,7 +399,8 @@ function makeSafeSerializer<T extends (...args: never[]) => string | undefined>(
 /**
  * Create a safe, stable stringify function with the supplied options.
  */
-export function configure(options: StringifyOptions = {}): Stringify {
+export function configure(options?: StringifyOptions): Stringify {
+	type ToJson = { toJSON: (key: string) => unknown }
 	type FunctionReplacerSerializer = (
 		key: string,
 		parent: unknown,
@@ -421,7 +408,7 @@ export function configure(options: StringifyOptions = {}): Stringify {
 		replacer: ReplacerFunction,
 		spacer: string,
 		indentation: string,
-	) => string | undefined
+	) => SerializedValue
 	// Object serializers receive values whose type is `object`, including `null`.
 	type ArrayReplacerSerializer = (
 		key: number | string,
@@ -430,29 +417,27 @@ export function configure(options: StringifyOptions = {}): Stringify {
 		replacer: Set<string>,
 		spacer: string,
 		indentation: string,
-	) => string | undefined
+	) => SerializedValue
 	type IndentedSerializer = (
 		key: number | string,
 		value: unknown,
 		stack: unknown[],
 		spacer: string,
 		indentation: string,
-	) => string | undefined
+	) => SerializedValue
 	type ObjectSerializer = (
 		key: number | string,
 		value: unknown,
 		stack: unknown[],
-	) => string | undefined
+	) => SerializedValue
 	type PrimitiveSerializer = (value: unknown) => string | undefined
-	type Serializer = (
-		value: unknown,
-		replacer?: Replacer,
-		space?: number | string,
-	) => string | undefined
 	const normalizedOptions = { ...options }
 	const fail = getStrictOption(normalizedOptions)
 	if (fail) {
-		normalizedOptions.bigint ??= false
+		// eslint-disable-next-line ts/prefer-nullish-coalescing -- Upstream rejects null rather than applying the strict-mode default.
+		if (normalizedOptions.bigint === undefined) {
+			normalizedOptions.bigint = false
+		}
 
 		if (!('circularValue' in normalizedOptions)) {
 			normalizedOptions.circularValue = Error
@@ -469,9 +454,11 @@ export function configure(options: StringifyOptions = {}): Stringify {
 
 	// Calls `toJSON` with the string key required by the native JSON API. Array indexes are
 	// passed as numbers and only converted to strings when a `toJSON` method needs them.
-	const callToJson = (toJson: UnknownFunction, value: unknown, key: number | string): unknown => {
+	const callToJson = (value: ToJson, key: number | string): unknown => {
 		const jsonKey = typeof key === 'number' ? String(key) : key
-		return isSafe ? callSafe(toJson, value, jsonKey) : toJson.call(value, jsonKey)
+		return isSafe
+			? callSafe(value.toJSON as UnknownFunction, value, jsonKey)
+			: value.toJSON(jsonKey)
 	}
 
 	let stringifyPrimitive: PrimitiveSerializer = (value) => {
@@ -526,11 +513,12 @@ export function configure(options: StringifyOptions = {}): Stringify {
 	) => {
 		let value = (parent as Record<string, unknown>)[key]
 
-		if (typeof value === 'object' && value) {
-			const toJson = (value as { toJSON?: unknown }).toJSON
-			if (typeof toJson === 'function') {
-				value = callToJson(toJson as UnknownFunction, value, key)
-			}
+		if (
+			typeof value === 'object' &&
+			value &&
+			typeof (value as { toJSON?: unknown }).toJSON === 'function'
+		) {
+			value = callToJson(value as ToJson, key)
 		}
 
 		value = replacer.call(parent, key, value)
@@ -579,7 +567,7 @@ export function configure(options: StringifyOptions = {}): Stringify {
 					spacer,
 					indentation,
 				)
-				result += temporary ?? 'null'
+				result += String(temporary ?? 'null')
 				result += join
 			}
 
@@ -591,7 +579,7 @@ export function configure(options: StringifyOptions = {}): Stringify {
 				spacer,
 				indentation,
 			)
-			result += temporary ?? 'null'
+			result += String(temporary ?? 'null')
 			if (value.length > maximumBreadth) {
 				const removedKeys = value.length - maximumBreadth
 				result += `${join}"... ${getItemCount(removedKeys)} not stringified"`
@@ -643,7 +631,7 @@ export function configure(options: StringifyOptions = {}): Stringify {
 				continue
 			}
 
-			result += `${separator}${stringifyString(objectKey)}:${whitespace}${temporary}`
+			result += `${separator}${stringifyString(objectKey)}:${whitespace}${String(temporary)}`
 			separator = join
 		}
 
@@ -673,9 +661,8 @@ export function configure(options: StringifyOptions = {}): Stringify {
 			return 'null'
 		}
 
-		const toJson = (value as { toJSON?: unknown }).toJSON
-		if (typeof toJson === 'function') {
-			const jsonValue = callToJson(toJson as UnknownFunction, value, key)
+		if (typeof (value as { toJSON?: unknown }).toJSON === 'function') {
+			const jsonValue = callToJson(value as ToJson, key)
 			if (typeof jsonValue !== 'object') {
 				return stringifyPrimitive(jsonValue)
 			}
@@ -720,7 +707,7 @@ export function configure(options: StringifyOptions = {}): Stringify {
 					typeof item === 'object'
 						? stringifyArrayReplacer(index, item, stack, replacer, spacer, indentation)
 						: stringifyPrimitive(item)
-				result += temporary ?? 'null'
+				result += String(temporary ?? 'null')
 				result += join
 			}
 
@@ -729,7 +716,7 @@ export function configure(options: StringifyOptions = {}): Stringify {
 				typeof item === 'object'
 					? stringifyArrayReplacer(index, item, stack, replacer, spacer, indentation)
 					: stringifyPrimitive(item)
-			result += temporary ?? 'null'
+			result += String(temporary ?? 'null')
 			if (value.length > maximumBreadth) {
 				const removedKeys = value.length - maximumBreadth
 				result += `${join}"... ${getItemCount(removedKeys)} not stringified"`
@@ -766,7 +753,7 @@ export function configure(options: StringifyOptions = {}): Stringify {
 				continue
 			}
 
-			result += `${separator}${stringifyString(objectKey)}:${whitespace}${temporary}`
+			result += `${separator}${stringifyString(objectKey)}:${whitespace}${String(temporary)}`
 			separator = join
 		}
 
@@ -783,9 +770,8 @@ export function configure(options: StringifyOptions = {}): Stringify {
 			return 'null'
 		}
 
-		const toJson = (value as { toJSON?: unknown }).toJSON
-		if (typeof toJson === 'function') {
-			const jsonValue = callToJson(toJson as UnknownFunction, value, key)
+		if (typeof (value as { toJSON?: unknown }).toJSON === 'function') {
+			const jsonValue = callToJson(value as ToJson, key)
 			// Prevent calling `toJSON` again.
 			if (typeof jsonValue !== 'object') {
 				return stringifyPrimitive(jsonValue)
@@ -826,7 +812,7 @@ export function configure(options: StringifyOptions = {}): Stringify {
 					typeof item === 'object'
 						? stringifyIndent(index, item, stack, spacer, indentation)
 						: stringifyPrimitive(item)
-				result += temporary ?? 'null'
+				result += String(temporary ?? 'null')
 				result += join
 			}
 
@@ -835,7 +821,7 @@ export function configure(options: StringifyOptions = {}): Stringify {
 				typeof item === 'object'
 					? stringifyIndent(index, item, stack, spacer, indentation)
 					: stringifyPrimitive(item)
-			result += temporary ?? 'null'
+			result += String(temporary ?? 'null')
 			if (value.length > maximumBreadth) {
 				const removedKeys = value.length - maximumBreadth
 				result += `${join}"... ${getItemCount(removedKeys)} not stringified"`
@@ -886,7 +872,7 @@ export function configure(options: StringifyOptions = {}): Stringify {
 				continue
 			}
 
-			result += `${separator}${stringifyString(objectKey)}: ${temporary}`
+			result += `${separator}${stringifyString(objectKey)}: ${String(temporary)}`
 			separator = join
 		}
 
@@ -909,9 +895,8 @@ export function configure(options: StringifyOptions = {}): Stringify {
 			return 'null'
 		}
 
-		const toJson = (value as { toJSON?: unknown }).toJSON
-		if (typeof toJson === 'function') {
-			const jsonValue = callToJson(toJson as UnknownFunction, value, key)
+		if (typeof (value as { toJSON?: unknown }).toJSON === 'function') {
+			const jsonValue = callToJson(value as ToJson, key)
 			// Prevent calling `toJSON` again.
 			if (typeof jsonValue !== 'object') {
 				return stringifyPrimitive(jsonValue)
@@ -947,14 +932,14 @@ export function configure(options: StringifyOptions = {}): Stringify {
 				const item: unknown = value[index]
 				const temporary =
 					typeof item === 'object' ? stringifyObject(index, item, stack) : stringifyPrimitive(item)
-				result += temporary ?? 'null'
+				result += String(temporary ?? 'null')
 				result += ','
 			}
 
 			const item: unknown = value[index]
 			const temporary =
 				typeof item === 'object' ? stringifyObject(index, item, stack) : stringifyPrimitive(item)
-			result += temporary ?? 'null'
+			result += String(temporary ?? 'null')
 			if (value.length > maximumBreadth) {
 				const removedKeys = value.length - maximumBreadth
 				result += `,"... ${getItemCount(removedKeys)} not stringified"`
@@ -1001,7 +986,7 @@ export function configure(options: StringifyOptions = {}): Stringify {
 				continue
 			}
 
-			result += `${separator}${stringifyString(objectKey)}:${temporary}`
+			result += `${separator}${stringifyString(objectKey)}:${String(temporary)}`
 			separator = ','
 		}
 
@@ -1015,14 +1000,18 @@ export function configure(options: StringifyOptions = {}): Stringify {
 	}
 
 	if (isSafe) {
-		stringifyFunctionReplacer = makeSafeSerializer(stringifyFunctionReplacer)
-		stringifyArrayReplacer = makeSafeSerializer(stringifyArrayReplacer)
-		stringifyIndent = makeSafeSerializer(stringifyIndent)
-		stringifyObject = makeSafeSerializer(stringifyObject)
-		stringifyPrimitive = makeSafeSerializer(stringifyPrimitive)
+		stringifyFunctionReplacer = makeSafe(stringifyFunctionReplacer)
+		stringifyArrayReplacer = makeSafe(stringifyArrayReplacer)
+		stringifyIndent = makeSafe(stringifyIndent)
+		stringifyObject = makeSafe(stringifyObject)
+		stringifyPrimitive = makeSafe(stringifyPrimitive)
 	}
 
-	const serializer: Serializer = function (value, replacer, space) {
+	function stringify(
+		value: unknown,
+		replacer?: Replacer,
+		space?: number | string,
+	): SerializedValue {
 		if (arguments.length > 1) {
 			let spacer = ''
 			if (typeof space === 'number') {
@@ -1033,7 +1022,7 @@ export function configure(options: StringifyOptions = {}): Stringify {
 			}
 
 			if (typeof replacer === 'function') {
-				const activeReplacer = isSafe ? makeSafeReplacer(replacer) : replacer
+				const activeReplacer = isSafe ? makeSafe(replacer, replacer.name) : replacer
 				return stringifyFunctionReplacer('', { '': value }, [], activeReplacer, spacer, '')
 			}
 
@@ -1056,12 +1045,13 @@ export function configure(options: StringifyOptions = {}): Stringify {
 
 	// The implementation fulfills the overloads exposed by `Stringify`.
 
-	return serializer as Stringify
+	return stringify as Stringify
 }
 
 const stringify = configure() as DefaultStringify
 stringify.configure = configure
 stringify.stringify = stringify
+stringify.default = stringify
 
 export { stringify }
 export default stringify

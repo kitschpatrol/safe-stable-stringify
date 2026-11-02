@@ -3,6 +3,7 @@
 ## @kitschpatrol/safe-stable-stringify fork
 
 - **Breaking change:** Adopt upstream's default `'[Circular: N]'` marker, where `N` is the referenced ancestor's depth, starting at 0 for the root. Set `circularValue: '[Circular]'` to retain the previous output.
+- Align strict option validation, safe mode error handling, accessor evaluation, and exported aliases with upstream 3.0.0.
 - See the readme for changes.
 
 ---
