@@ -28,7 +28,7 @@ This is a fork of [BridgeAR/safe-stable-stringify](https://github.com/BridgeAR/s
 - Port to TypeScript.
 - Repository project template aligned with [kitschpatrol/create-project](https://github.com/kitschpatrol/create-project). (Massive diff, but simplifies management on my end.)
 
-It will be deprecated if / when fixes are available upstream.
+Please see the [upstream readme](https://github.com/BridgeAR/safe-stable-stringify/blob/main/readme.md) for more details and documentation.
 
 <!-- install({ headingLevel: 2 }) -->
 
@@ -89,9 +89,3 @@ The upstream project is sponsored by [MaibornWolff](https://www.maibornwolff.de/
 ## License
 
 [MIT](license.txt)
-
----
-
-## More information
-
-Please see the [upstream readme](https://github.com/BridgeAR/safe-stable-stringify/blob/main/readme.md) for more details and documentation.
