@@ -1,5 +1,7 @@
 import { constants } from 'node:buffer'
-import { expect, test as vitestTest } from 'vitest'
+import { runInNewContext } from 'node:vm'
+import { expect, vi, test as vitestTest } from 'vitest'
+import type { Stringify, StringifyOptions } from '../src/index.ts'
 import { stringify } from '../src/index.ts'
 
 type TestCallback = (assert: TestAssertions) => void
@@ -24,6 +26,8 @@ const DETERMINISTIC_PATTERN = /deterministic/v
 const NEVER_MATCH_PATTERN = /a/v
 const SAFE_PATTERN = /safe/v
 const UNICODE_ESCAPE_PATTERN = /\\u/gv
+const STRICT_FAILURE_PATTERN = /Object can not safely be stringified/v
+const STRICT_BIGINT_PATTERN = /Received type bigint \(1\)/v
 const JSON_NULL = getJsonNull()
 
 function getJsonNull(): NullValue {
@@ -948,6 +952,15 @@ test('maximum spacer length', (assert) => {
 	assert.end()
 })
 
+test('negative spacer length', (assert) => {
+	const input = { a: 0 }
+	// A negative number means no indentation, same as JSON.stringify (not a throw).
+	assert.equal(stringify(input, JSON_NULL, -1), JSON.stringify(input, JSON_NULL, -1))
+	assert.equal(stringify(input, JSON_NULL, -1e5), JSON.stringify(input, JSON_NULL, -1e5))
+	assert.equal(stringify(input, JSON_NULL, -Infinity), JSON.stringify(input, JSON_NULL, -Infinity))
+	assert.end()
+})
+
 test('indent properly; regression test for issue #16', (assert) => {
 	const firstItem: MutableRecord = {
 		creators: [
@@ -1093,11 +1106,15 @@ test('maximumDepth config', (assert) => {
 	const result = serialize(object, (_key, value) => value)
 	assert.equal(result, '{"a":{"a":"[Array]","b":"[Object]"}}')
 
+	// Array replacers enforce the maximum depth for nested objects, too.
 	const result2 = serialize(object, ['a', 'b'])
-	assert.equal(result2, '{"a":{"a":"[Array]","b":{}}}')
+	assert.equal(result2, '{"a":{"a":"[Array]","b":"[Object]"}}')
 
 	const json = JSON.stringify(object, ['a', 'b'])
 	assert.equal(json, '{"a":{"a":[1,2,3],"b":{}}}')
+
+	const serializeDepth1 = stringify.configure({ maximumDepth: 1 })
+	assert.equal(serializeDepth1(object, ['a', 'b']), '{"a":"[Object]"}')
 
 	const result3 = serialize(object, JSON_NULL, 2)
 	assert.equal(
@@ -1824,6 +1841,695 @@ test('safe mode safeguards against failing toJSON and a difficult to stringify e
 		'{\n "a": 1,\n "b": 2,\n "c": "Error: Stringification failed with toJSON (Failed)"\n}'
 	const actual = serializer(object, JSON_NULL, 1)
 	assert.equal(actual, expected)
+
+	assert.end()
+})
+
+type ReplacerArgument = Parameters<typeof stringify>[1]
+
+function identityReplacer(_key: string, value: unknown): unknown {
+	return value
+}
+
+// Combines the default, function, and array replacer modes with and without indentation.
+function getModes(keys: string[]) {
+	return [undefined, identityReplacer, keys].flatMap((replacer) =>
+		[undefined, 2].map((space) => ({ replacer, space })),
+	)
+}
+
+function nativeStringify(value: unknown, replacer?: ReplacerArgument, space?: number | string) {
+	// The native API accepts the same replacer shapes, but its overloads are narrower.
+	return JSON.stringify(value, replacer as Parameters<typeof JSON.stringify>[1], space)
+}
+
+const escapeRuntimes: unknown[] = [
+	undefined,
+	JSON_NULL,
+	{},
+	{ versions: {} },
+	{ versions: { node: '21.0.0' } },
+	{ versions: { node: '22.0.0' } },
+	{ versions: { node: '26.3.1' } },
+]
+
+async function importWithProcess(runtime: unknown): Promise<Stringify> {
+	vi.resetModules()
+	vi.stubGlobal('process', runtime)
+	try {
+		const freshModule = await import('../src/index.ts')
+		return freshModule.stringify
+	} finally {
+		vi.unstubAllGlobals()
+	}
+}
+
+function countNativeStringifyCalls(callback: () => unknown): number {
+	const spy = vi.spyOn(JSON, 'stringify')
+	try {
+		callback()
+		return spy.mock.calls.length
+	} finally {
+		spy.mockRestore()
+	}
+}
+
+// Assertions are delegated to the compatibility adapter.
+// eslint-disable-next-line test/expect-expect
+vitestTest(
+	'escaping preserves output across runtime and string length boundaries',
+	async () => {
+		for (const runtime of escapeRuntimes) {
+			const serializer = await importWithProcess(runtime)
+			const nodeVersion = (runtime as undefined | { versions?: { node?: string } })?.versions?.node
+			const threshold = Number(nodeVersion?.split('.', 1)[0]) >= 22 ? 128 : 5000
+			for (const length of [0, 31, 32, 127, 128, 4999, 5000]) {
+				const value = 'x'.repeat(length)
+				// Native escaping follows the runtime threshold.
+				assertions.equal(
+					countNativeStringifyCalls(() => serializer(value)),
+					length >= threshold ? 1 : 0,
+				)
+				assertions.equal(serializer(value), JSON.stringify(value))
+
+				for (const ending of [
+					'',
+					'"',
+					'\\',
+					'\n',
+					'\u{D800}',
+					'\u{DFFF}',
+					'\u{1F600}',
+					'\u{100}',
+				]) {
+					const text = 'x'.repeat(Math.max(0, length - ending.length)) + ending
+					const cases = [text, [text], { [text]: text }].flatMap((input) =>
+						[JSON_NULL, identityReplacer, [text]].map((replacer) => ({ input, replacer })),
+					)
+					for (const { input, replacer } of cases) {
+						assertions.equal(serializer(input, replacer), nativeStringify(input, replacer))
+						assertions.equal(serializer(input, replacer, 2), nativeStringify(input, replacer, 2))
+					}
+				}
+			}
+		}
+	},
+	60_000,
+)
+
+for (const name of ['Float16Array', 'Float32Array', 'Float64Array']) {
+	type FloatArrayConstructor = { from: (values: number[]) => ArrayLike<number> }
+	const floatArray = (globalThis as Record<string, unknown>)[name] as
+		FloatArrayConstructor | undefined
+	test(`${name} serializes non-finite values`, { skip: floatArray === undefined }, (assert) => {
+		const typedArray = floatArray!
+		const strict = stringify.configure({ strict: true })
+		for (const space of [undefined, 2]) {
+			for (const number of [NaN, Infinity, -Infinity]) {
+				for (const values of [
+					[number, 1],
+					[1, number],
+				]) {
+					const value = { metrics: typedArray.from(values) }
+					assert.equal(stringify(value, JSON_NULL, space), JSON.stringify(value, JSON_NULL, space))
+					assert.throws(() => strict(value, JSON_NULL, space), {
+						message: `Object can not safely be stringified. Received type number (${number})`,
+					})
+				}
+			}
+
+			const finite = typedArray.from([-0, 1.5, -2])
+			assert.equal(strict(finite, JSON_NULL, space), JSON.stringify(finite, JSON_NULL, space))
+			const empty = typedArray.from([])
+			assert.equal(strict(empty, JSON_NULL, space), JSON.stringify(empty, JSON_NULL, space))
+			const limited = stringify.configure({ maximumBreadth: 1, strict: true })
+			assert.equal(
+				limited(typedArray.from([1, NaN]), JSON_NULL, space),
+				JSON.stringify({ 0: 1, '...': '1 item not stringified' }, JSON_NULL, space),
+			)
+		}
+
+		assert.end()
+	})
+}
+
+test('floating typed arrays retain their intrinsic type', (assert) => {
+	class FloatSubclass extends Float32Array {}
+	const foreign = runInNewContext('new Float64Array([1, Infinity])') as Float64Array
+	const subclass = new FloatSubclass([1, -Infinity])
+	const disguised = new Float32Array([1, NaN])
+	Object.defineProperties(disguised, {
+		constructor: { value: Int32Array },
+		[Symbol.toStringTag]: { value: 'Int32Array' },
+	})
+	for (const value of [foreign, subclass, disguised]) {
+		for (const space of [undefined, 2]) {
+			assert.equal(stringify(value, JSON_NULL, space), JSON.stringify(value, JSON_NULL, space))
+		}
+	}
+
+	assert.end()
+})
+
+test('integer and bigint typed arrays retain their formatting', (assert) => {
+	const integerArrays: Array<{ from: (values: number[]) => ArrayLike<number> }> = [
+		Int8Array,
+		Uint8Array,
+		Uint8ClampedArray,
+		Int16Array,
+		Uint16Array,
+		Int32Array,
+		Uint32Array,
+	]
+	for (const integerArray of integerArrays) {
+		const value = integerArray.from([0, 1, 2])
+		for (const space of [undefined, 2]) {
+			assert.equal(stringify(value, JSON_NULL, space), JSON.stringify(value, JSON_NULL, space))
+		}
+	}
+
+	const bigintArrays: Array<{ from: (values: bigint[]) => ArrayLike<bigint> }> = [
+		BigInt64Array,
+		BigUint64Array,
+	]
+	for (const bigintArray of bigintArrays) {
+		const value = bigintArray.from([0n, 1n, 2n])
+		for (const bigint of [true, 'string'] as const) {
+			const serialize = stringify.configure({ bigint })
+			const expected = bigint === 'string' ? { 0: '0', 1: '1', 2: '2' } : { 0: 0, 1: 1, 2: 2 }
+			for (const space of [undefined, 2]) {
+				assert.equal(serialize(value, JSON_NULL, space), JSON.stringify(expected, JSON_NULL, space))
+			}
+		}
+	}
+
+	assert.end()
+})
+
+function assertCircularOutput(
+	assert: TestAssertions,
+	serializer: ReturnType<typeof stringify.configure>,
+	value: unknown,
+	expected: unknown,
+	keys: string[],
+): void {
+	for (const replacer of [undefined, identityReplacer, keys]) {
+		for (const space of [undefined, 2]) {
+			assert.equal(serializer(value, replacer, space), JSON.stringify(expected, JSON_NULL, space))
+		}
+	}
+}
+
+test('default circular markers are consistent in every serialization mode', (assert) => {
+	const array: unknown[] = []
+	const child: MutableRecord = { array }
+	const root: MutableRecord = { child }
+	root.root = root
+	child.root = root
+	child.self = child
+	array.push(root, child, array)
+
+	const expected = {
+		child: {
+			array: ['[Circular]', '[Circular]', '[Circular]'],
+			root: '[Circular]',
+			self: '[Circular]',
+		},
+		root: '[Circular]',
+	}
+	const arrayRoot: unknown[] = []
+	const nestedArray: unknown[] = []
+	arrayRoot.push(nestedArray, arrayRoot)
+	nestedArray.push(arrayRoot, nestedArray)
+	for (const serializer of [
+		stringify,
+		stringify.configure({ deterministic: false }),
+		stringify.configure({ safe: true }),
+	]) {
+		assertCircularOutput(assert, serializer, root, expected, ['child', 'array', 'root', 'self'])
+		assertCircularOutput(
+			assert,
+			serializer,
+			arrayRoot,
+			[['[Circular]', '[Circular]'], '[Circular]'],
+			[],
+		)
+	}
+
+	assert.end()
+})
+
+test('circular references take precedence over maximumDepth', (assert) => {
+	const array: unknown[] = []
+	const child: MutableRecord = {}
+	const root: MutableRecord = { array, child }
+	array.push(root, array)
+	child.root = root
+	child.self = child
+	const keys = ['array', 'child', 'root', 'self']
+	assertCircularOutput(
+		assert,
+		stringify.configure({ maximumDepth: 1 }),
+		root,
+		{ array: '[Array]', child: '[Object]' },
+		keys,
+	)
+	assertCircularOutput(
+		assert,
+		stringify.configure({ maximumDepth: 2 }),
+		root,
+		{ array: ['[Circular]', '[Circular]'], child: { root: '[Circular]', self: '[Circular]' } },
+		keys,
+	)
+	assert.end()
+})
+
+test('toJSON results can refer to serialized ancestors', (assert) => {
+	const root: MutableRecord = {}
+	root.child = {
+		link: {
+			toJSON() {
+				return root
+			},
+		},
+	}
+	const wrapper = {
+		toJSON() {
+			return root
+		},
+	}
+	assertCircularOutput(assert, stringify, wrapper, { child: { link: '[Circular]' } }, [
+		'child',
+		'link',
+	])
+	assert.end()
+})
+
+test('function replacers can create circular references to ancestors', (assert) => {
+	function circularReplacer(this: unknown, key: string, value: unknown): unknown {
+		return key === 'self' ? this : value
+	}
+
+	const root = { child: { self: 0 }, self: 0 }
+	const expected = { child: { self: '[Circular]' }, self: '[Circular]' }
+	for (const space of [undefined, 2]) {
+		assert.equal(
+			stringify(root, circularReplacer, space),
+			JSON.stringify(expected, JSON_NULL, space),
+		)
+	}
+
+	assert.end()
+})
+
+test('explicit circular values retain their behavior in every mode', (assert) => {
+	const array: unknown[] = []
+	const root: MutableRecord = { array }
+	array.push(root)
+	root.self = root
+	for (const circularValue of ['', '[Circular]', '[Circular: 0]', 'custom', JSON_NULL, undefined]) {
+		const expected =
+			circularValue === undefined
+				? { array: [JSON_NULL] }
+				: { array: [circularValue], self: circularValue }
+		assertCircularOutput(assert, stringify.configure({ circularValue }), root, expected, [
+			'array',
+			'self',
+		])
+	}
+
+	for (const circularValue of [Error, TypeError]) {
+		const serializer = stringify.configure({ circularValue })
+		for (const replacer of [undefined, identityReplacer, ['array', 'self']]) {
+			for (const space of [undefined, 2]) {
+				assert.throws(() => serializer(root, replacer, space), TypeError)
+			}
+		}
+	}
+
+	assert.end()
+})
+
+test('toJSON receives array keys as string in every mode', (assert) => {
+	for (const safe of [false, true]) {
+		const serializer = stringify.configure({ safe })
+		for (const replacer of [undefined, identityReplacer, ['nested']]) {
+			for (const space of [undefined, 2]) {
+				const keys: string[] = []
+				const array: unknown[] = Array.from({ length: 1001 })
+				for (const index of [0, 10, 1000]) {
+					array[index] = {
+						toJSON(key: string) {
+							keys.push(key)
+							return index
+						},
+					}
+				}
+
+				array[1] = {
+					toJSON(key: string) {
+						keys.push(key)
+						return {
+							nested: [
+								{
+									toJSON(nestedKey: string) {
+										keys.push(nestedKey)
+										return JSON_NULL
+									},
+								},
+							],
+						}
+					},
+				}
+				const expected: unknown[] = Array.from({ length: 1001 })
+				expected[0] = 0
+				expected[1] = { nested: [JSON_NULL] }
+				expected[10] = 10
+				expected[1000] = 1000
+				assert.equal(serializer(array, replacer, space), JSON.stringify(expected, JSON_NULL, space))
+				assert.same(keys, ['0', '1', '0', '10', '1000'])
+			}
+		}
+	}
+
+	assert.end()
+})
+
+test('primitive values preserve their formatting in every mode', (assert) => {
+	const values: unknown[] = [
+		0,
+		-0,
+		1.5,
+		NaN,
+		Infinity,
+		-Infinity,
+		'',
+		'text',
+		'\n"\\',
+		'\u{D800}',
+		JSON_NULL,
+		undefined,
+		true,
+		false,
+		Symbol('value'),
+		() => 'value',
+		{ value: 42 },
+	]
+	for (const safe of [false, true]) {
+		const serializer = stringify.configure({ safe })
+		for (const { replacer, space } of getModes(['value'])) {
+			for (const value of values) {
+				for (const input of [value, [value, value], [value], { value }]) {
+					assert.equal(serializer(input, replacer, space), JSON.stringify(input, JSON_NULL, space))
+				}
+
+				const wrapped = {
+					toJSON() {
+						return value
+					},
+				}
+				assert.equal(
+					serializer([wrapped, wrapped], replacer, space),
+					JSON.stringify([wrapped, wrapped], JSON_NULL, space),
+				)
+			}
+
+			assert.equal(
+				serializer(Array.from({ length: 2 }), replacer, space),
+				JSON.stringify([JSON_NULL, JSON_NULL], JSON_NULL, space),
+			)
+		}
+	}
+
+	assert.end()
+})
+
+test('primitive escaping failures preserve adjacent elements in every mode', (assert) => {
+	const serializer = stringify.configure({ safe: true })
+	const value = '\n'
+	const native = JSON.stringify.bind(JSON)
+	const message = 'Error: Stringification failed (Invalid string length)'
+	const results: Array<[string | undefined, string]> = []
+	const spy = vi.spyOn(JSON, 'stringify').mockImplementation((input, replacer, space) => {
+		if (input === value) {
+			throw new RangeError('Invalid string length')
+		}
+
+		return native(input, replacer, space)
+	})
+	try {
+		for (const replacer of [undefined, identityReplacer, ['value']]) {
+			for (const space of [undefined, 2]) {
+				results.push(
+					[serializer([value], replacer, space), native([message], JSON_NULL, space)],
+					[
+						serializer([value, 0, '\t'], replacer, space),
+						native([message, 0, '\t'], JSON_NULL, space),
+					],
+					[
+						serializer(['\t', 0, value], replacer, space),
+						native(['\t', 0, message], JSON_NULL, space),
+					],
+				)
+			}
+		}
+	} finally {
+		spy.mockRestore()
+	}
+
+	for (const [actual, expected] of results) {
+		assert.equal(actual, expected)
+	}
+
+	assert.end()
+})
+
+test('primitive failures and bigint options retain their behavior in every mode', (assert) => {
+	const unsupported: Array<[unknown, string]> = [
+		[NaN, 'number (NaN)'],
+		[Infinity, 'number (Infinity)'],
+		[-Infinity, 'number (-Infinity)'],
+		[Symbol('value'), 'symbol (Symbol(value))'],
+		[() => 'value', 'function'],
+	]
+	const strict = stringify.configure({ strict: true })
+	const safeStrict = stringify.configure({ safe: true, strict: true })
+	const safeSerializer = stringify.configure({ safe: true })
+	const failing = {
+		get value(): unknown {
+			throw new Error('Oops')
+		},
+	}
+	const bigintOptions = ([true, false, 'string'] as const).flatMap((bigint) =>
+		[false, true].flatMap((safe) =>
+			[false, true].map((isStrict) => ({ bigint, safe, strict: isStrict })),
+		),
+	)
+	for (const { replacer, space } of getModes(['value'])) {
+		for (const [value, description] of unsupported) {
+			assert.throws(() => strict([value, 0], replacer, space), STRICT_FAILURE_PATTERN)
+			assert.throws(() => strict([0, value], replacer, space), STRICT_FAILURE_PATTERN)
+			const message = `Error: Stringification failed (Object can not safely be stringified. Received type ${description})`
+			assert.equal(
+				safeStrict([value, 0], replacer, space),
+				JSON.stringify([message, 0], JSON_NULL, space),
+			)
+			assert.equal(
+				safeStrict([0, value], replacer, space),
+				JSON.stringify([0, message], JSON_NULL, space),
+			)
+		}
+
+		assert.equal(
+			safeStrict([undefined, undefined], replacer, space),
+			JSON.stringify([JSON_NULL, JSON_NULL], JSON_NULL, space),
+		)
+		for (const options of bigintOptions) {
+			const serializer = stringify.configure(options)
+			if (options.strict && options.bigint === false && !options.safe) {
+				assert.throws(() => serializer([1n, 0], replacer, space), STRICT_BIGINT_PATTERN)
+				assert.throws(() => serializer([0, 1n], replacer, space), STRICT_BIGINT_PATTERN)
+				continue
+			}
+
+			const expected =
+				options.bigint === 'string'
+					? '1'
+					: options.bigint
+						? 1
+						: options.strict
+							? 'Error: Stringification failed (Object can not safely be stringified. Received type bigint (1))'
+							: JSON_NULL
+			assert.equal(
+				serializer([1n, 0], replacer, space),
+				JSON.stringify([expected, 0], JSON_NULL, space),
+			)
+			assert.equal(
+				serializer([0, 1n], replacer, space),
+				JSON.stringify([0, expected], JSON_NULL, space),
+			)
+		}
+
+		const error = 'Error: Stringification failed (Oops)'
+		const expected = typeof replacer === 'function' ? { value: error } : error
+		assert.equal(
+			safeSerializer([failing, 0], replacer, space),
+			JSON.stringify([expected, 0], JSON_NULL, space),
+		)
+		assert.equal(
+			safeSerializer([0, failing], replacer, space),
+			JSON.stringify([0, expected], JSON_NULL, space),
+		)
+	}
+
+	assert.end()
+})
+
+test('function replacers run after toJSON and can change each input type', (assert) => {
+	for (const space of [undefined, 2]) {
+		const calls: string[] = []
+		const input = [
+			{
+				toJSON(key: string) {
+					calls.push(`toJSON:${key}`)
+					return 1
+				},
+			},
+			{},
+			undefined,
+		]
+		function replacer(this: unknown, key: string, value: unknown): unknown {
+			calls.push(`replacer:${key}`)
+			if (key === '0') {
+				assert.equal(this, input)
+				assert.equal(value, 1)
+				return { value }
+			}
+
+			if (key === '1') {
+				return false
+			}
+
+			if (key === '2') {
+				return 'filled'
+			}
+
+			return value
+		}
+
+		assert.equal(
+			stringify(input, replacer, space),
+			JSON.stringify([{ value: 1 }, false, 'filled'], JSON_NULL, space),
+		)
+		assert.same(calls, [
+			'replacer:',
+			'toJSON:0',
+			'replacer:0',
+			'replacer:value',
+			'replacer:1',
+			'replacer:2',
+		])
+	}
+
+	assert.end()
+})
+
+test('deterministic sorting preserves keys across insertion and native sort boundaries', (assert) => {
+	for (const size of [0, 1, 2, 3, 8, 9, 31, 32, 33, 34, 199, 200, 201]) {
+		const keys = Array.from(
+			{ length: size },
+			(_value, index) => `key${String(index).padStart(3, '0')}`,
+		)
+		const adjacent = [...keys]
+		if (size > 1) {
+			const first = adjacent[0]!
+			adjacent[0] = adjacent[1]!
+			adjacent[1] = first
+		}
+
+		const rotated = size > 0 ? [keys.at(-1)!, ...keys.slice(0, -1)] : []
+		for (const order of [keys, keys.toReversed(), adjacent, rotated]) {
+			const value: Record<string, string> = {}
+			const expected: Record<string, string> = {}
+			for (const key of order) {
+				value[key] = key
+			}
+
+			for (const key of keys) {
+				expected[key] = key
+			}
+
+			for (const replacer of [undefined, identityReplacer]) {
+				for (const space of [undefined, 2]) {
+					assert.equal(
+						stringify({ nested: value }, replacer, space),
+						JSON.stringify({ nested: expected }, JSON_NULL, space),
+					)
+				}
+			}
+		}
+	}
+
+	assert.end()
+})
+
+test('array replacers are only processed in the object branch', (assert) => {
+	const optionSets: StringifyOptions[] = [
+		{},
+		{ safe: true },
+		{ strict: true },
+		{ safe: true, strict: true },
+		{ bigint: false },
+		{ bigint: 'string' },
+	]
+	for (const options of optionSets) {
+		const serialize = stringify.configure(options)
+		for (const property of ['0', Symbol.iterator]) {
+			let reads = 0
+			const replacer = ['value']
+			Object.defineProperty(replacer, property, {
+				get() {
+					reads++
+					throw new Error('replacer read')
+				},
+			})
+			for (const value of [
+				'value',
+				0,
+				NaN,
+				Infinity,
+				true,
+				false,
+				undefined,
+				42n,
+				Symbol('value'),
+				identityReplacer,
+			]) {
+				let expected: string | undefined
+				try {
+					expected = serialize(value)
+				} catch (error) {
+					assert.throws(() => serialize(value, replacer), { message: (error as Error).message })
+					continue
+				}
+
+				for (const space of [undefined, 2, '\t']) {
+					assert.equal(serialize(value, replacer, space), expected)
+				}
+			}
+
+			// Primitive roots do not read the array replacer.
+			assert.equal(reads, 0)
+			for (const value of [JSON_NULL, {}, { value: 1 }, []]) {
+				assert.throws(() => serialize(value, replacer), { message: 'replacer read' })
+			}
+
+			// The object branch still processes the array replacer.
+			assert.equal(reads, 4)
+		}
+
+		assert.equal(serialize({ other: 2, value: 1 }, ['value', 'value']), '{"value":1}')
+	}
 
 	assert.end()
 })

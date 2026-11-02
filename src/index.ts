@@ -46,11 +46,27 @@ type DefaultStringify = Stringify & {
 	stringify: Stringify
 }
 
+type NumericArray = ArrayLike<bigint | number>
+
 // Escape C0 control characters, double quotes, the backslash, and every code unit in the
 // inclusive range 0xD800 to 0xDFFF.
 // eslint-disable-next-line no-control-regex
 const STRING_ESCAPE_SEQUENCES = /[\u{0}-\u{1F}\u{22}\u{5C}\u{D800}-\u{DFFF}]/v
 const JSON_NULL = /a/v.exec('b')
+const NATIVE_ESCAPE_LENGTH = getNativeEscapeLength()
+const TYPED_ARRAY_PROTOTYPE = Object.getPrototypeOf(Int8Array.prototype) as Record<
+	PropertyKey,
+	unknown
+>
+
+function getNativeEscapeLength(): number {
+	type RuntimeProcess = NullValue | undefined | { versions?: NullValue | { node?: unknown } }
+	// Native escaping is faster for longer strings on Node.js 22 and later. Browsers and other
+	// runtimes without a Node.js version keep the previous threshold.
+	const runtime = typeof process === 'object' ? (process as RuntimeProcess) : undefined
+	const nodeVersion = runtime ? runtime.versions?.node : undefined
+	return typeof nodeVersion === 'string' && Number(nodeVersion.split('.', 1)[0]) >= 22 ? 128 : 5000
+}
 
 function getProperty(value: unknown, key: PropertyKey): unknown {
 	// The serializer intentionally reads arbitrary user-provided values.
@@ -61,65 +77,105 @@ function hasOwn(value: StringifyOptions, key: PropertyKey): boolean {
 	return Object.hasOwn(value, key)
 }
 
-function getLength(value: unknown): number | undefined {
-	const length = getProperty(value, 'length')
-	return typeof length === 'number' ? length : undefined
-}
-
 function stringifyString(value: string): string {
-	// These thresholds performed well in benchmarks against V8 8.0 and remain cheaper than
-	// calling the native serializer for the common case.
-	return value.length < 5000 && !STRING_ESCAPE_SEQUENCES.test(value)
+	return value.length < NATIVE_ESCAPE_LENGTH && !STRING_ESCAPE_SEQUENCES.test(value)
 		? `"${value}"`
 		: JSON.stringify(value)
 }
 
 function sortStrings(values: string[], comparator?: Comparator): string[] {
 	// Insertion sort is efficient for small inputs but has poor worst-case complexity.
+	// The caller always supplies a fresh key array, so in-place sorting avoids an extra allocation.
 	if (comparator !== undefined || values.length > 200) {
-		// The caller always supplies a fresh key array, so in-place sorting avoids an extra allocation.
 		// eslint-disable-next-line unicorn/no-array-sort
 		return values.sort(comparator)
 	}
 
-	for (let index = 1; index < values.length; index++) {
-		const currentValue = values[index]!
-		let position = index
-		while (position !== 0 && values[position - 1]! > currentValue) {
-			values[position] = values[position - 1]!
-			position--
+	let moves = 0
+	if (values.length > 1 && values[0]! > values[1]!) {
+		const currentValue = values[1]!
+		// A descending start that also sorts after the last key indicates unordered input.
+		if (values.length > 32 && currentValue > values.at(-1)!) {
+			// eslint-disable-next-line unicorn/no-array-sort
+			return values.sort()
 		}
 
+		values[1] = values[0]!
+		values[0] = currentValue
+		moves = 1
+	}
+
+	for (let index = 2; index < values.length; index++) {
+		const currentValue = values[index]!
+		if (values[index - 1]! <= currentValue) {
+			continue
+		}
+
+		let position = index
+		do {
+			values[position] = values[position - 1]!
+			position--
+		} while (position !== 0 && values[position - 1]! > currentValue)
+
 		values[position] = currentValue
+		moves += index - position
+		// Bound the insertion sort work and fall back to the native sort for unordered input.
+		if (moves > values.length && moves > 32) {
+			// eslint-disable-next-line unicorn/no-array-sort
+			return values.sort()
+		}
 	}
 
 	return values
 }
 
-function isTypedArrayWithEntries(value: unknown): boolean {
-	return ArrayBuffer.isView(value) && !(value instanceof DataView) && (getLength(value) ?? 0) > 0
+function getTypedArrayType(value: unknown): string | undefined {
+	if (!ArrayBuffer.isView(value)) {
+		return undefined
+	}
+
+	// Read the intrinsic typed array type, ignoring subclasses, own `Symbol.toStringTag`
+	// overrides, and realm boundaries. The getter returns `undefined` for a `DataView`.
+	const type = Reflect.get(TYPED_ARRAY_PROTOTYPE, Symbol.toStringTag, value) as string | undefined
+	// Empty typed arrays are serialized like ordinary empty objects.
+	return (value as { length?: number }).length === 0 ? undefined : type
 }
 
 function wrapInQuotes(value: unknown): string {
 	return `"${String(value)}"`
 }
 
+function stringifyFloat(value: number, fail: FailFunction | undefined): string {
+	return Number.isFinite(value) ? String(value) : fail ? fail(value) : 'null'
+}
+
 function stringifyTypedArray(
-	array: unknown,
+	array: NumericArray,
 	separator: string,
 	maximumBreadth: number,
 	bigint: 'string' | boolean,
+	fail: FailFunction | undefined,
+	type: string,
 ): string {
-	const length = getLength(array) ?? 0
-	const breadth = Math.min(length, maximumBreadth)
-	const firstValue = getProperty(array, 0)
-	const method =
-		bigint === 'string' && typeof firstValue === 'bigint' && length > 0 ? wrapInQuotes : String
+	const breadth = Math.min(array.length, maximumBreadth)
 	const whitespace = separator === ',' ? '' : ' '
+
+	// Floating-point arrays can contain non-finite values, which JSON represents as `null`.
+	if (type.startsWith('Float')) {
+		let result = `"0":${whitespace}${stringifyFloat(array[0] as number, fail)}`
+		for (let index = 1; index < breadth; index++) {
+			result += `${separator}"${index}":${whitespace}${stringifyFloat(array[index] as number, fail)}`
+		}
+
+		return result
+	}
+
+	const firstValue = array[0]
+	const method = bigint === 'string' && typeof firstValue === 'bigint' ? wrapInQuotes : String
 	let result = `"0":${whitespace}${method(firstValue)}`
 
 	for (let index = 1; index < breadth; index++) {
-		result += `${separator}"${index}":${whitespace}${method(getProperty(array, index))}`
+		result += `${separator}"${index}":${whitespace}${method(array[index])}`
 	}
 
 	return result
@@ -365,8 +421,9 @@ export function configure(options: StringifyOptions = {}): Stringify {
 		spacer: string,
 		indentation: string,
 	) => string | undefined
+	// Object serializers receive values whose type is `object`, including `null`.
 	type ArrayReplacerSerializer = (
-		key: string,
+		key: number | string,
 		value: unknown,
 		stack: unknown[],
 		replacer: Set<string>,
@@ -374,13 +431,18 @@ export function configure(options: StringifyOptions = {}): Stringify {
 		indentation: string,
 	) => string | undefined
 	type IndentedSerializer = (
-		key: string,
+		key: number | string,
 		value: unknown,
 		stack: unknown[],
 		spacer: string,
 		indentation: string,
 	) => string | undefined
-	type RecursiveSerializer = (key: string, value: unknown, stack: unknown[]) => string | undefined
+	type ObjectSerializer = (
+		key: number | string,
+		value: unknown,
+		stack: unknown[],
+	) => string | undefined
+	type PrimitiveSerializer = (value: unknown) => string | undefined
 	type Serializer = (
 		value: unknown,
 		replacer?: Replacer,
@@ -404,6 +466,55 @@ export function configure(options: StringifyOptions = {}): Stringify {
 	const maximumBreadth = getPositiveIntegerOption(normalizedOptions, 'maximumBreadth')
 	const isSafe = getBooleanOption(normalizedOptions, 'safe', false)
 
+	// Calls `toJSON` with the string key required by the native JSON API. Array indexes are
+	// passed as numbers and only converted to strings when a `toJSON` method needs them.
+	const callToJson = (toJson: UnknownFunction, value: unknown, key: number | string): unknown => {
+		const jsonKey = typeof key === 'number' ? String(key) : key
+		return isSafe ? callSafe(toJson, value, jsonKey) : toJson.call(value, jsonKey)
+	}
+
+	let stringifyPrimitive: PrimitiveSerializer = (value) => {
+		switch (typeof value) {
+			case 'string': {
+				return stringifyString(value)
+			}
+
+			case 'number': {
+				return Number.isFinite(value) ? String(value) : fail ? fail(value) : 'null'
+			}
+
+			case 'boolean': {
+				return value ? 'true' : 'false'
+			}
+
+			case 'undefined': {
+				return OMITTED_VALUE
+			}
+
+			case 'bigint': {
+				if (bigint !== false) {
+					return bigint === 'string' ? `"${String(value)}"` : String(value)
+				}
+
+				return fail ? fail(value) : undefined
+			}
+
+			case 'object': {
+				// Objects are dispatched to the object serializers before reaching this point.
+				return value === null ? 'null' : OMITTED_VALUE
+			}
+
+			case 'function':
+			case 'symbol': {
+				return fail ? fail(value) : undefined
+			}
+		}
+	}
+
+	// The function replacer serializer is protected as a whole, so its primitives skip the
+	// additional safe wrapper.
+	const stringifyFunctionReplacerPrimitive = stringifyPrimitive
+
 	let stringifyFunctionReplacer: FunctionReplacerSerializer = (
 		key,
 		parent,
@@ -417,169 +528,135 @@ export function configure(options: StringifyOptions = {}): Stringify {
 		if (typeof value === 'object' && value) {
 			const toJson = (value as { toJSON?: unknown }).toJSON
 			if (typeof toJson === 'function') {
-				value = isSafe
-					? callSafe(toJson as UnknownFunction, value, key)
-					: (toJson as UnknownFunction).call(value, key)
+				value = callToJson(toJson as UnknownFunction, value, key)
 			}
 		}
 
 		value = replacer.call(parent, key, value)
 
-		switch (typeof value) {
-			case 'bigint': {
-				if (bigint !== false) {
-					return bigint === 'string' ? `"${String(value)}"` : String(value)
-				}
-
-				return fail ? fail(value) : undefined
-			}
-
-			case 'boolean': {
-				return value ? 'true' : 'false'
-			}
-
-			case 'function': {
-				return fail ? fail(value) : undefined
-			}
-
-			case 'number': {
-				return Number.isFinite(value) ? String(value) : fail ? fail(value) : 'null'
-			}
-
-			case 'object': {
-				if (!value) {
-					return 'null'
-				}
-
-				if (stack.includes(value)) {
-					return getCircularValue()
-				}
-
-				let result = ''
-				let join = ','
-				const originalIndentation = indentation
-
-				if (Array.isArray(value)) {
-					if (value.length === 0) {
-						return '[]'
-					}
-
-					if (maximumDepth < stack.length + 1) {
-						return '"[Array]"'
-					}
-
-					stack.push(value)
-					if (spacer !== '') {
-						indentation += spacer
-						result += `\n${indentation}`
-						join = `,\n${indentation}`
-					}
-
-					const maximumValuesToStringify = Math.min(value.length, maximumBreadth)
-					let index = 0
-					for (; index < maximumValuesToStringify - 1; index++) {
-						const temporary = stringifyFunctionReplacer(
-							String(index),
-							value,
-							stack,
-							replacer,
-							spacer,
-							indentation,
-						)
-						result += temporary ?? 'null'
-						result += join
-					}
-
-					const temporary = stringifyFunctionReplacer(
-						String(index),
-						value,
-						stack,
-						replacer,
-						spacer,
-						indentation,
-					)
-					result += temporary ?? 'null'
-					if (value.length > maximumBreadth) {
-						const removedKeys = value.length - maximumBreadth
-						result += `${join}"... ${getItemCount(removedKeys)} not stringified"`
-					}
-
-					if (spacer !== '') {
-						result += `\n${originalIndentation}`
-					}
-
-					stack.pop()
-					return `[${result}]`
-				}
-
-				let keys = Object.keys(value)
-				const keyLength = keys.length
-				if (keyLength === 0) {
-					return '{}'
-				}
-
-				if (maximumDepth < stack.length + 1) {
-					return '"[Object]"'
-				}
-
-				let whitespace = ''
-				let separator = ''
-				if (spacer !== '') {
-					indentation += spacer
-					join = `,\n${indentation}`
-					whitespace = ' '
-				}
-
-				const maximumPropertiesToStringify = Math.min(keyLength, maximumBreadth)
-				if (deterministic !== false && !isTypedArrayWithEntries(value)) {
-					keys = sortStrings(keys, comparator)
-				}
-
-				stack.push(value)
-				for (let index = 0; index < maximumPropertiesToStringify; index++) {
-					const objectKey = keys[index]!
-					const temporary = stringifyFunctionReplacer(
-						objectKey,
-						value,
-						stack,
-						replacer,
-						spacer,
-						indentation,
-					)
-					if (temporary === undefined) {
-						continue
-					}
-
-					result += `${separator}${stringifyString(objectKey)}:${whitespace}${temporary}`
-					separator = join
-				}
-
-				if (keyLength > maximumBreadth) {
-					const removedKeys = keyLength - maximumBreadth
-					result += `${separator}"...":${whitespace}"${getItemCount(removedKeys)} not stringified"`
-					separator = join
-				}
-
-				if (spacer !== '' && separator.length > 1) {
-					result = `\n${indentation}${result}\n${originalIndentation}`
-				}
-
-				stack.pop()
-				return `{${result}}`
-			}
-
-			case 'string': {
-				return stringifyString(value)
-			}
-
-			case 'symbol': {
-				return fail ? fail(value) : undefined
-			}
-
-			case 'undefined': {
-				return OMITTED_VALUE
-			}
+		if (typeof value !== 'object') {
+			return stringifyFunctionReplacerPrimitive(value)
 		}
+
+		if (value === null) {
+			return 'null'
+		}
+
+		if (stack.includes(value)) {
+			return getCircularValue()
+		}
+
+		let result = ''
+		let join = ','
+		const originalIndentation = indentation
+
+		if (Array.isArray(value)) {
+			if (value.length === 0) {
+				return '[]'
+			}
+
+			if (maximumDepth < stack.length + 1) {
+				return '"[Array]"'
+			}
+
+			stack.push(value)
+			if (spacer !== '') {
+				indentation += spacer
+				result += `\n${indentation}`
+				join = `,\n${indentation}`
+			}
+
+			const maximumValuesToStringify = Math.min(value.length, maximumBreadth)
+			let index = 0
+			for (; index < maximumValuesToStringify - 1; index++) {
+				const temporary = stringifyFunctionReplacer(
+					String(index),
+					value,
+					stack,
+					replacer,
+					spacer,
+					indentation,
+				)
+				result += temporary ?? 'null'
+				result += join
+			}
+
+			const temporary = stringifyFunctionReplacer(
+				String(index),
+				value,
+				stack,
+				replacer,
+				spacer,
+				indentation,
+			)
+			result += temporary ?? 'null'
+			if (value.length > maximumBreadth) {
+				const removedKeys = value.length - maximumBreadth
+				result += `${join}"... ${getItemCount(removedKeys)} not stringified"`
+			}
+
+			if (spacer !== '') {
+				result += `\n${originalIndentation}`
+			}
+
+			stack.pop()
+			return `[${result}]`
+		}
+
+		let keys = Object.keys(value)
+		const keyLength = keys.length
+		if (keyLength === 0) {
+			return '{}'
+		}
+
+		if (maximumDepth < stack.length + 1) {
+			return '"[Object]"'
+		}
+
+		let whitespace = ''
+		let separator = ''
+		if (spacer !== '') {
+			indentation += spacer
+			join = `,\n${indentation}`
+			whitespace = ' '
+		}
+
+		const maximumPropertiesToStringify = Math.min(keyLength, maximumBreadth)
+		if (deterministic !== false && getTypedArrayType(value) === undefined) {
+			keys = sortStrings(keys, comparator)
+		}
+
+		stack.push(value)
+		for (let index = 0; index < maximumPropertiesToStringify; index++) {
+			const objectKey = keys[index]!
+			const temporary = stringifyFunctionReplacer(
+				objectKey,
+				value,
+				stack,
+				replacer,
+				spacer,
+				indentation,
+			)
+			if (temporary === undefined) {
+				continue
+			}
+
+			result += `${separator}${stringifyString(objectKey)}:${whitespace}${temporary}`
+			separator = join
+		}
+
+		if (keyLength > maximumBreadth) {
+			const removedKeys = keyLength - maximumBreadth
+			result += `${separator}"...":${whitespace}"${getItemCount(removedKeys)} not stringified"`
+			separator = join
+		}
+
+		if (spacer !== '' && separator.length > 1) {
+			result = `\n${indentation}${result}\n${originalIndentation}`
+		}
+
+		stack.pop()
+		return `{${result}}`
 	}
 
 	let stringifyArrayReplacer: ArrayReplacerSerializer = (
@@ -590,461 +667,362 @@ export function configure(options: StringifyOptions = {}): Stringify {
 		spacer,
 		indentation,
 	) => {
-		if (typeof value === 'object' && value) {
-			const toJson = (value as { toJSON?: unknown }).toJSON
-			if (typeof toJson === 'function') {
-				value = isSafe
-					? callSafe(toJson as UnknownFunction, value, key)
-					: (toJson as UnknownFunction).call(value, key)
-			}
+		if (value === null) {
+			return 'null'
 		}
 
-		switch (typeof value) {
-			case 'bigint': {
-				if (bigint !== false) {
-					return bigint === 'string' ? `"${String(value)}"` : String(value)
-				}
-
-				return fail ? fail(value) : undefined
+		const toJson = (value as { toJSON?: unknown }).toJSON
+		if (typeof toJson === 'function') {
+			const jsonValue = callToJson(toJson as UnknownFunction, value, key)
+			if (typeof jsonValue !== 'object') {
+				return stringifyPrimitive(jsonValue)
 			}
 
-			case 'boolean': {
-				return value ? 'true' : 'false'
+			if (jsonValue === null) {
+				return 'null'
 			}
 
-			case 'function': {
-				return fail ? fail(value) : undefined
-			}
-
-			case 'number': {
-				return Number.isFinite(value) ? String(value) : fail ? fail(value) : 'null'
-			}
-
-			case 'object': {
-				if (!value) {
-					return 'null'
-				}
-
-				if (stack.includes(value)) {
-					return getCircularValue()
-				}
-
-				const originalIndentation = indentation
-				let result = ''
-				let join = ','
-
-				if (Array.isArray(value)) {
-					if (value.length === 0) {
-						return '[]'
-					}
-
-					if (maximumDepth < stack.length + 1) {
-						return '"[Array]"'
-					}
-
-					stack.push(value)
-					if (spacer !== '') {
-						indentation += spacer
-						result += `\n${indentation}`
-						join = `,\n${indentation}`
-					}
-
-					const maximumValuesToStringify = Math.min(value.length, maximumBreadth)
-					let index = 0
-					for (; index < maximumValuesToStringify - 1; index++) {
-						const temporary = stringifyArrayReplacer(
-							String(index),
-							value[index],
-							stack,
-							replacer,
-							spacer,
-							indentation,
-						)
-						result += temporary ?? 'null'
-						result += join
-					}
-
-					const temporary = stringifyArrayReplacer(
-						String(index),
-						value[index],
-						stack,
-						replacer,
-						spacer,
-						indentation,
-					)
-					result += temporary ?? 'null'
-					if (value.length > maximumBreadth) {
-						const removedKeys = value.length - maximumBreadth
-						result += `${join}"... ${getItemCount(removedKeys)} not stringified"`
-					}
-
-					if (spacer !== '') {
-						result += `\n${originalIndentation}`
-					}
-
-					stack.pop()
-					return `[${result}]`
-				}
-
-				stack.push(value)
-				let whitespace = ''
-				if (spacer !== '') {
-					indentation += spacer
-					join = `,\n${indentation}`
-					whitespace = ' '
-				}
-
-				let separator = ''
-				for (const objectKey of replacer) {
-					const temporary = stringifyArrayReplacer(
-						objectKey,
-						(value as Record<string, unknown>)[objectKey],
-						stack,
-						replacer,
-						spacer,
-						indentation,
-					)
-					if (temporary === undefined) {
-						continue
-					}
-
-					result += `${separator}${stringifyString(objectKey)}:${whitespace}${temporary}`
-					separator = join
-				}
-
-				if (spacer !== '' && separator.length > 1) {
-					result = `\n${indentation}${result}\n${originalIndentation}`
-				}
-
-				stack.pop()
-				return `{${result}}`
-			}
-
-			case 'string': {
-				return stringifyString(value)
-			}
-
-			case 'symbol': {
-				return fail ? fail(value) : undefined
-			}
-
-			case 'undefined': {
-				return OMITTED_VALUE
-			}
+			value = jsonValue
 		}
+
+		if (stack.includes(value)) {
+			return getCircularValue()
+		}
+
+		const originalIndentation = indentation
+		let result = ''
+		let join = ','
+
+		if (Array.isArray(value)) {
+			if (value.length === 0) {
+				return '[]'
+			}
+
+			if (maximumDepth < stack.length + 1) {
+				return '"[Array]"'
+			}
+
+			stack.push(value)
+			if (spacer !== '') {
+				indentation += spacer
+				result += `\n${indentation}`
+				join = `,\n${indentation}`
+			}
+
+			const maximumValuesToStringify = Math.min(value.length, maximumBreadth)
+			let index = 0
+			for (; index < maximumValuesToStringify - 1; index++) {
+				const item: unknown = value[index]
+				const temporary =
+					typeof item === 'object'
+						? stringifyArrayReplacer(index, item, stack, replacer, spacer, indentation)
+						: stringifyPrimitive(item)
+				result += temporary ?? 'null'
+				result += join
+			}
+
+			const item: unknown = value[index]
+			const temporary =
+				typeof item === 'object'
+					? stringifyArrayReplacer(index, item, stack, replacer, spacer, indentation)
+					: stringifyPrimitive(item)
+			result += temporary ?? 'null'
+			if (value.length > maximumBreadth) {
+				const removedKeys = value.length - maximumBreadth
+				result += `${join}"... ${getItemCount(removedKeys)} not stringified"`
+			}
+
+			if (spacer !== '') {
+				result += `\n${originalIndentation}`
+			}
+
+			stack.pop()
+			return `[${result}]`
+		}
+
+		if (maximumDepth < stack.length + 1) {
+			return '"[Object]"'
+		}
+
+		stack.push(value)
+		let whitespace = ''
+		if (spacer !== '') {
+			indentation += spacer
+			join = `,\n${indentation}`
+			whitespace = ' '
+		}
+
+		let separator = ''
+		for (const objectKey of replacer) {
+			const item = (value as Record<string, unknown>)[objectKey]
+			const temporary =
+				typeof item === 'object'
+					? stringifyArrayReplacer(objectKey, item, stack, replacer, spacer, indentation)
+					: stringifyPrimitive(item)
+			if (temporary === undefined) {
+				continue
+			}
+
+			result += `${separator}${stringifyString(objectKey)}:${whitespace}${temporary}`
+			separator = join
+		}
+
+		if (spacer !== '' && separator.length > 1) {
+			result = `\n${indentation}${result}\n${originalIndentation}`
+		}
+
+		stack.pop()
+		return `{${result}}`
 	}
 
 	let stringifyIndent: IndentedSerializer = (key, value, stack, spacer, indentation) => {
-		switch (typeof value) {
-			case 'bigint': {
-				if (bigint !== false) {
-					return bigint === 'string' ? `"${String(value)}"` : String(value)
-				}
-
-				return fail ? fail(value) : undefined
-			}
-
-			case 'boolean': {
-				return value ? 'true' : 'false'
-			}
-
-			case 'function': {
-				return fail ? fail(value) : undefined
-			}
-
-			case 'number': {
-				return Number.isFinite(value) ? String(value) : fail ? fail(value) : 'null'
-			}
-
-			case 'object': {
-				if (!value) {
-					return 'null'
-				}
-
-				const toJson = (value as { toJSON?: unknown }).toJSON
-				if (typeof toJson === 'function') {
-					value = isSafe
-						? callSafe(toJson as UnknownFunction, value, key)
-						: (toJson as UnknownFunction).call(value, key)
-					// Prevent calling `toJSON` again.
-					if (typeof value !== 'object') {
-						return stringifyIndent(key, value, stack, spacer, indentation)
-					}
-
-					if (!value) {
-						return 'null'
-					}
-				}
-
-				if (stack.includes(value)) {
-					return getCircularValue()
-				}
-
-				const originalIndentation = indentation
-
-				if (Array.isArray(value)) {
-					if (value.length === 0) {
-						return '[]'
-					}
-
-					if (maximumDepth < stack.length + 1) {
-						return '"[Array]"'
-					}
-
-					stack.push(value)
-					indentation += spacer
-					let result = `\n${indentation}`
-					const join = `,\n${indentation}`
-					const maximumValuesToStringify = Math.min(value.length, maximumBreadth)
-					let index = 0
-					for (; index < maximumValuesToStringify - 1; index++) {
-						const temporary = stringifyIndent(
-							String(index),
-							value[index],
-							stack,
-							spacer,
-							indentation,
-						)
-						result += temporary ?? 'null'
-						result += join
-					}
-
-					const temporary = stringifyIndent(String(index), value[index], stack, spacer, indentation)
-					result += temporary ?? 'null'
-					if (value.length > maximumBreadth) {
-						const removedKeys = value.length - maximumBreadth
-						result += `${join}"... ${getItemCount(removedKeys)} not stringified"`
-					}
-
-					result += `\n${originalIndentation}`
-					stack.pop()
-					return `[${result}]`
-				}
-
-				let keys = Object.keys(value)
-				const keyLength = keys.length
-				if (keyLength === 0) {
-					return '{}'
-				}
-
-				if (maximumDepth < stack.length + 1) {
-					return '"[Object]"'
-				}
-
-				indentation += spacer
-				const join = `,\n${indentation}`
-				let result = ''
-				let separator = ''
-				let maximumPropertiesToStringify = Math.min(keyLength, maximumBreadth)
-				if (isTypedArrayWithEntries(value)) {
-					const rawLength = (value as { length?: unknown }).length
-					const length = typeof rawLength === 'number' ? rawLength : 0
-					result += stringifyTypedArray(value, join, maximumBreadth, bigint)
-					keys = keys.slice(length)
-					maximumPropertiesToStringify -= length
-					separator = join
-				}
-
-				if (deterministic !== false) {
-					keys = sortStrings(keys, comparator)
-				}
-
-				stack.push(value)
-				for (let index = 0; index < maximumPropertiesToStringify; index++) {
-					const objectKey = keys[index]!
-					const temporary = stringifyIndent(
-						objectKey,
-						(value as Record<string, unknown>)[objectKey],
-						stack,
-						spacer,
-						indentation,
-					)
-					if (temporary === undefined) {
-						continue
-					}
-
-					result += `${separator}${stringifyString(objectKey)}: ${temporary}`
-					separator = join
-				}
-
-				if (keyLength > maximumBreadth) {
-					const removedKeys = keyLength - maximumBreadth
-					result += `${separator}"...": "${getItemCount(removedKeys)} not stringified"`
-					separator = join
-				}
-
-				if (separator !== '') {
-					result = `\n${indentation}${result}\n${originalIndentation}`
-				}
-
-				stack.pop()
-				return `{${result}}`
-			}
-
-			case 'string': {
-				return stringifyString(value)
-			}
-
-			case 'symbol': {
-				return fail ? fail(value) : undefined
-			}
-
-			case 'undefined': {
-				return OMITTED_VALUE
-			}
+		if (value === null) {
+			return 'null'
 		}
+
+		const toJson = (value as { toJSON?: unknown }).toJSON
+		if (typeof toJson === 'function') {
+			const jsonValue = callToJson(toJson as UnknownFunction, value, key)
+			// Prevent calling `toJSON` again.
+			if (typeof jsonValue !== 'object') {
+				return stringifyPrimitive(jsonValue)
+			}
+
+			if (jsonValue === null) {
+				return 'null'
+			}
+
+			value = jsonValue
+		}
+
+		if (stack.includes(value)) {
+			return getCircularValue()
+		}
+
+		const originalIndentation = indentation
+
+		if (Array.isArray(value)) {
+			if (value.length === 0) {
+				return '[]'
+			}
+
+			if (maximumDepth < stack.length + 1) {
+				return '"[Array]"'
+			}
+
+			stack.push(value)
+			indentation += spacer
+			let result = `\n${indentation}`
+			const join = `,\n${indentation}`
+			const maximumValuesToStringify = Math.min(value.length, maximumBreadth)
+			let index = 0
+			for (; index < maximumValuesToStringify - 1; index++) {
+				const item: unknown = value[index]
+				const temporary =
+					typeof item === 'object'
+						? stringifyIndent(index, item, stack, spacer, indentation)
+						: stringifyPrimitive(item)
+				result += temporary ?? 'null'
+				result += join
+			}
+
+			const item: unknown = value[index]
+			const temporary =
+				typeof item === 'object'
+					? stringifyIndent(index, item, stack, spacer, indentation)
+					: stringifyPrimitive(item)
+			result += temporary ?? 'null'
+			if (value.length > maximumBreadth) {
+				const removedKeys = value.length - maximumBreadth
+				result += `${join}"... ${getItemCount(removedKeys)} not stringified"`
+			}
+
+			result += `\n${originalIndentation}`
+			stack.pop()
+			return `[${result}]`
+		}
+
+		let keys = Object.keys(value as Record<string, unknown>)
+		const keyLength = keys.length
+		if (keyLength === 0) {
+			return '{}'
+		}
+
+		if (maximumDepth < stack.length + 1) {
+			return '"[Object]"'
+		}
+
+		indentation += spacer
+		const join = `,\n${indentation}`
+		let result = ''
+		let separator = ''
+		let maximumPropertiesToStringify = Math.min(keyLength, maximumBreadth)
+		const typedArrayType = getTypedArrayType(value)
+		if (typedArrayType !== undefined) {
+			const typedArray = value as NumericArray
+			result += stringifyTypedArray(typedArray, join, maximumBreadth, bigint, fail, typedArrayType)
+			keys = keys.slice(typedArray.length)
+			maximumPropertiesToStringify -= typedArray.length
+			separator = join
+		}
+
+		if (deterministic !== false) {
+			keys = sortStrings(keys, comparator)
+		}
+
+		stack.push(value)
+		for (let index = 0; index < maximumPropertiesToStringify; index++) {
+			const objectKey = keys[index]!
+			const item = (value as Record<string, unknown>)[objectKey]
+			const temporary =
+				typeof item === 'object'
+					? stringifyIndent(objectKey, item, stack, spacer, indentation)
+					: stringifyPrimitive(item)
+			if (temporary === undefined) {
+				continue
+			}
+
+			result += `${separator}${stringifyString(objectKey)}: ${temporary}`
+			separator = join
+		}
+
+		if (keyLength > maximumBreadth) {
+			const removedKeys = keyLength - maximumBreadth
+			result += `${separator}"...": "${getItemCount(removedKeys)} not stringified"`
+			separator = join
+		}
+
+		if (separator !== '') {
+			result = `\n${indentation}${result}\n${originalIndentation}`
+		}
+
+		stack.pop()
+		return `{${result}}`
 	}
 
-	let stringifySimple: RecursiveSerializer = (key, value, stack) => {
-		switch (typeof value) {
-			case 'string': {
-				return stringifyString(value)
-			}
-
-			case 'object': {
-				if (value === null) {
-					return 'null'
-				}
-
-				const toJson = (value as { toJSON?: unknown }).toJSON
-				if (typeof toJson === 'function') {
-					value = isSafe
-						? callSafe(toJson as UnknownFunction, value, key)
-						: (toJson as UnknownFunction).call(value, key)
-					// Prevent calling `toJSON` again.
-					if (typeof value !== 'object') {
-						return stringifySimple(key, value, stack)
-					}
-
-					if (value === null) {
-						return 'null'
-					}
-				}
-
-				if (stack.includes(value)) {
-					return getCircularValue()
-				}
-
-				let result = ''
-				const rawLength = (value as { length?: unknown }).length
-				const length = typeof rawLength === 'number' ? rawLength : undefined
-				const hasLength = length !== undefined
-				if (hasLength && Array.isArray(value)) {
-					if (value.length === 0) {
-						return '[]'
-					}
-
-					if (maximumDepth < stack.length + 1) {
-						return '"[Array]"'
-					}
-
-					stack.push(value)
-					const maximumValuesToStringify = Math.min(value.length, maximumBreadth)
-					let index = 0
-					for (; index < maximumValuesToStringify - 1; index++) {
-						const temporary = stringifySimple(String(index), value[index], stack)
-						result += temporary ?? 'null'
-						result += ','
-					}
-
-					const temporary = stringifySimple(String(index), value[index], stack)
-					result += temporary ?? 'null'
-					if (value.length > maximumBreadth) {
-						const removedKeys = value.length - maximumBreadth
-						result += `,"... ${getItemCount(removedKeys)} not stringified"`
-					}
-
-					stack.pop()
-					return `[${result}]`
-				}
-
-				let keys = Object.keys(value)
-				const keyLength = keys.length
-				if (keyLength === 0) {
-					return '{}'
-				}
-
-				if (maximumDepth < stack.length + 1) {
-					return '"[Object]"'
-				}
-
-				let separator = ''
-				let maximumPropertiesToStringify = Math.min(keyLength, maximumBreadth)
-				if (hasLength && isTypedArrayWithEntries(value)) {
-					result += stringifyTypedArray(value, ',', maximumBreadth, bigint)
-					keys = keys.slice(length)
-					maximumPropertiesToStringify -= length
-					separator = ','
-				}
-
-				if (deterministic !== false) {
-					keys = sortStrings(keys, comparator)
-				}
-
-				stack.push(value)
-				for (let index = 0; index < maximumPropertiesToStringify; index++) {
-					const objectKey = keys[index]!
-					const temporary = stringifySimple(
-						objectKey,
-						(value as Record<string, unknown>)[objectKey],
-						stack,
-					)
-					if (temporary === undefined) {
-						continue
-					}
-
-					result += `${separator}${stringifyString(objectKey)}:${temporary}`
-					separator = ','
-				}
-
-				if (keyLength > maximumBreadth) {
-					const removedKeys = keyLength - maximumBreadth
-					result += `${separator}"...":"${getItemCount(removedKeys)} not stringified"`
-				}
-
-				stack.pop()
-				return `{${result}}`
-			}
-
-			case 'number': {
-				return Number.isFinite(value) ? String(value) : fail ? fail(value) : 'null'
-			}
-
-			case 'boolean': {
-				return value ? 'true' : 'false'
-			}
-
-			case 'undefined': {
-				return OMITTED_VALUE
-			}
-
-			case 'bigint': {
-				if (bigint !== false) {
-					return bigint === 'string' ? `"${String(value)}"` : String(value)
-				}
-
-				return fail ? fail(value) : undefined
-			}
-
-			case 'function':
-			case 'symbol': {
-				return fail ? fail(value) : undefined
-			}
+	let stringifyObject: ObjectSerializer = (key, value, stack) => {
+		if (value === null) {
+			return 'null'
 		}
+
+		const toJson = (value as { toJSON?: unknown }).toJSON
+		if (typeof toJson === 'function') {
+			const jsonValue = callToJson(toJson as UnknownFunction, value, key)
+			// Prevent calling `toJSON` again.
+			if (typeof jsonValue !== 'object') {
+				return stringifyPrimitive(jsonValue)
+			}
+
+			if (jsonValue === null) {
+				return 'null'
+			}
+
+			value = jsonValue
+		}
+
+		if (stack.includes(value)) {
+			return getCircularValue()
+		}
+
+		let result = ''
+		const hasLength = (value as { length?: unknown }).length !== undefined
+		if (hasLength && Array.isArray(value)) {
+			if (value.length === 0) {
+				return '[]'
+			}
+
+			if (maximumDepth < stack.length + 1) {
+				return '"[Array]"'
+			}
+
+			stack.push(value)
+			const maximumValuesToStringify = Math.min(value.length, maximumBreadth)
+			let index = 0
+			for (; index < maximumValuesToStringify - 1; index++) {
+				const item: unknown = value[index]
+				const temporary =
+					typeof item === 'object' ? stringifyObject(index, item, stack) : stringifyPrimitive(item)
+				result += temporary ?? 'null'
+				result += ','
+			}
+
+			const item: unknown = value[index]
+			const temporary =
+				typeof item === 'object' ? stringifyObject(index, item, stack) : stringifyPrimitive(item)
+			result += temporary ?? 'null'
+			if (value.length > maximumBreadth) {
+				const removedKeys = value.length - maximumBreadth
+				result += `,"... ${getItemCount(removedKeys)} not stringified"`
+			}
+
+			stack.pop()
+			return `[${result}]`
+		}
+
+		let keys = Object.keys(value as Record<string, unknown>)
+		const keyLength = keys.length
+		if (keyLength === 0) {
+			return '{}'
+		}
+
+		if (maximumDepth < stack.length + 1) {
+			return '"[Object]"'
+		}
+
+		let separator = ''
+		let maximumPropertiesToStringify = Math.min(keyLength, maximumBreadth)
+		const typedArrayType = hasLength ? getTypedArrayType(value) : undefined
+		if (typedArrayType !== undefined) {
+			const typedArray = value as NumericArray
+			result += stringifyTypedArray(typedArray, ',', maximumBreadth, bigint, fail, typedArrayType)
+			keys = keys.slice(typedArray.length)
+			maximumPropertiesToStringify -= typedArray.length
+			separator = ','
+		}
+
+		if (deterministic !== false) {
+			keys = sortStrings(keys, comparator)
+		}
+
+		stack.push(value)
+		for (let index = 0; index < maximumPropertiesToStringify; index++) {
+			const objectKey = keys[index]!
+			const item = (value as Record<string, unknown>)[objectKey]
+			const temporary =
+				typeof item === 'object'
+					? stringifyObject(objectKey, item, stack)
+					: stringifyPrimitive(item)
+			if (temporary === undefined) {
+				continue
+			}
+
+			result += `${separator}${stringifyString(objectKey)}:${temporary}`
+			separator = ','
+		}
+
+		if (keyLength > maximumBreadth) {
+			const removedKeys = keyLength - maximumBreadth
+			result += `${separator}"...":"${getItemCount(removedKeys)} not stringified"`
+		}
+
+		stack.pop()
+		return `{${result}}`
 	}
 
 	if (isSafe) {
 		stringifyFunctionReplacer = makeSafeSerializer(stringifyFunctionReplacer)
 		stringifyArrayReplacer = makeSafeSerializer(stringifyArrayReplacer)
 		stringifyIndent = makeSafeSerializer(stringifyIndent)
-		stringifySimple = makeSafeSerializer(stringifySimple)
+		stringifyObject = makeSafeSerializer(stringifyObject)
+		stringifyPrimitive = makeSafeSerializer(stringifyPrimitive)
 	}
 
 	const serializer: Serializer = function (value, replacer, space) {
 		if (arguments.length > 1) {
 			let spacer = ''
 			if (typeof space === 'number') {
-				spacer = ' '.repeat(Math.min(space, 10))
+				// Negative widths produce no indentation, matching `JSON.stringify`.
+				spacer = ' '.repeat(Math.max(0, Math.min(space, 10)))
 			} else if (typeof space === 'string') {
 				spacer = space.slice(0, 10)
 			}
@@ -1055,15 +1033,20 @@ export function configure(options: StringifyOptions = {}): Stringify {
 			}
 
 			if (Array.isArray(replacer)) {
-				return stringifyArrayReplacer('', value, [], getUniqueReplacerSet(replacer), spacer, '')
+				// Primitive roots never read the array replacer.
+				return typeof value === 'object'
+					? stringifyArrayReplacer('', value, [], getUniqueReplacerSet(replacer), spacer, '')
+					: stringifyPrimitive(value)
 			}
 
 			if (spacer.length > 0) {
-				return stringifyIndent('', value, [], spacer, '')
+				return typeof value === 'object'
+					? stringifyIndent('', value, [], spacer, '')
+					: stringifyPrimitive(value)
 			}
 		}
 
-		return stringifySimple('', value, [])
+		return typeof value === 'object' ? stringifyObject('', value, []) : stringifyPrimitive(value)
 	}
 
 	// The implementation fulfills the overloads exposed by `Stringify`.
