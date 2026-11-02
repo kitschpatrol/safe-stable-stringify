@@ -5,7 +5,7 @@ type UnknownFunction = (...args: unknown[]) => unknown
 type Comparator = (left: string, right: string) => number
 type ReplacerFunction = (this: unknown, key: string, value: unknown) => unknown
 type FailFunction = (value: unknown) => never
-type CircularValueFunction = () => string | undefined
+type CircularValueFunction = (depth: number) => string | undefined
 
 /** A property-list or transformation function compatible with `JSON.stringify`. */
 export type Replacer = NullValue | ReadonlyArray<number | string> | ReplacerFunction | undefined
@@ -15,8 +15,9 @@ export type StringifyOptions = {
 	/** Serialize bigint values as numbers or strings. Defaults to `true`. */
 	bigint?: 'string' | boolean
 	/**
-	 * Replacement for circular references. Use `Error` to throw or `undefined` to
-	 * omit them.
+	 * Replacement for circular references. Defaults to `[Circular: N]`, where `N`
+	 * is the referenced ancestor's depth, starting at 0 for the root. Use `Error`
+	 * to throw or `undefined` to omit them.
 	 */
 	circularValue?: ErrorConstructor | NullValue | string | undefined
 	/** Sort object keys, optionally with a custom comparator. Defaults to `true`. */
@@ -210,8 +211,8 @@ function getCircularValueOption(options: StringifyOptions): CircularValueFunctio
 	return getDefaultCircularValue
 }
 
-function getDefaultCircularValue(): string {
-	return '"[Circular]"'
+function getDefaultCircularValue(depth: number): string {
+	return `"[Circular: ${depth}]"`
 }
 
 function getDeterministicOption(options: StringifyOptions): boolean | Comparator {
@@ -542,8 +543,9 @@ export function configure(options: StringifyOptions = {}): Stringify {
 			return 'null'
 		}
 
-		if (stack.includes(value)) {
-			return getCircularValue()
+		const circularIndex = stack.indexOf(value)
+		if (circularIndex !== -1) {
+			return getCircularValue(circularIndex)
 		}
 
 		let result = ''
@@ -685,8 +687,9 @@ export function configure(options: StringifyOptions = {}): Stringify {
 			value = jsonValue
 		}
 
-		if (stack.includes(value)) {
-			return getCircularValue()
+		const circularIndex = stack.indexOf(value)
+		if (circularIndex !== -1) {
+			return getCircularValue(circularIndex)
 		}
 
 		const originalIndentation = indentation
@@ -795,8 +798,9 @@ export function configure(options: StringifyOptions = {}): Stringify {
 			value = jsonValue
 		}
 
-		if (stack.includes(value)) {
-			return getCircularValue()
+		const circularIndex = stack.indexOf(value)
+		if (circularIndex !== -1) {
+			return getCircularValue(circularIndex)
 		}
 
 		const originalIndentation = indentation
@@ -920,8 +924,9 @@ export function configure(options: StringifyOptions = {}): Stringify {
 			value = jsonValue
 		}
 
-		if (stack.includes(value)) {
-			return getCircularValue()
+		const circularIndex = stack.indexOf(value)
+		if (circularIndex !== -1) {
+			return getCircularValue(circularIndex)
 		}
 
 		let result = ''

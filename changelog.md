@@ -2,6 +2,7 @@
 
 ## @kitschpatrol/safe-stable-stringify fork
 
+- **Breaking change:** Adopt upstream's default `'[Circular: N]'` marker, where `N` is the referenced ancestor's depth, starting at 0 for the root. Set `circularValue: '[Circular]'` to retain the previous output.
 - See the readme for changes.
 
 ---

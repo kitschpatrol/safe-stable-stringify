@@ -150,7 +150,7 @@ test('toJSON receives array keys as string', (assert) => {
 test('circular reference to root', (assert) => {
 	const fixture: MutableRecord = { name: 'Tywin Lannister' }
 	fixture.circle = fixture
-	const expected = JSON.stringify({ circle: '[Circular]', name: 'Tywin Lannister' })
+	const expected = JSON.stringify({ circle: '[Circular: 0]', name: 'Tywin Lannister' })
 	const actual = stringify(fixture)
 	assert.equal(actual, expected)
 	assert.end()
@@ -159,7 +159,7 @@ test('circular reference to root', (assert) => {
 test('nested circular reference to root', (assert) => {
 	const fixture: MutableRecord = { name: 'Tywin\n\t"Lannister' }
 	fixture.id = { circle: fixture }
-	const expected = JSON.stringify({ id: { circle: '[Circular]' }, name: 'Tywin\n\t"Lannister' })
+	const expected = JSON.stringify({ id: { circle: '[Circular: 0]' }, name: 'Tywin\n\t"Lannister' })
 	const actual = stringify(fixture)
 	assert.equal(actual, expected)
 	assert.end()
@@ -189,7 +189,7 @@ test('child circular reference', (assert) => {
 	child.dinklage = child
 	const expected = JSON.stringify({
 		child: {
-			dinklage: '[Circular]',
+			dinklage: '[Circular: 1]',
 			name: 'Tyrion\n\t"Lannister'.repeat(20),
 		},
 		name: 'Tywin Lannister',
@@ -205,7 +205,7 @@ test('nested child circular reference', (assert) => {
 	child.actor = { dinklage: child }
 	const expected = JSON.stringify({
 		child: {
-			actor: { dinklage: '[Circular]' },
+			actor: { dinklage: '[Circular: 1]' },
 			name: 'Tyrion Lannister',
 		},
 		name: 'Tywin Lannister',
@@ -219,7 +219,7 @@ test('circular objects in an array', (assert) => {
 	const fixture: MutableRecord = { name: 'Tywin Lannister' }
 	fixture.hand = [fixture, fixture]
 	const expected = JSON.stringify({
-		hand: ['[Circular]', '[Circular]'],
+		hand: ['[Circular: 0]', '[Circular: 0]'],
 		name: 'Tywin Lannister',
 	})
 	const actual = stringify(fixture)
@@ -240,8 +240,8 @@ test('nested circular references in an array', (assert) => {
 	const expected = JSON.stringify({
 		name: 'Tywin Lannister',
 		offspring: [
-			{ dinklage: '[Circular]', name: 'Tyrion Lannister' },
-			{ headey: '[Circular]', name: 'Cersei Lannister' },
+			{ dinklage: '[Circular: 2]', name: 'Tyrion Lannister' },
+			{ headey: '[Circular: 2]', name: 'Cersei Lannister' },
 		],
 	})
 	const actual = stringify(fixture)
@@ -252,7 +252,7 @@ test('nested circular references in an array', (assert) => {
 test('circular arrays', (assert) => {
 	const fixture: unknown[] = []
 	fixture.push(fixture, fixture)
-	const expected = JSON.stringify(['[Circular]', '[Circular]'])
+	const expected = JSON.stringify(['[Circular: 0]', '[Circular: 0]'])
 	const actual = stringify(fixture)
 	assert.equal(actual, expected)
 	assert.end()
@@ -265,8 +265,8 @@ test('nested circular arrays', (assert) => {
 		{ circular: fixture, name: 'Ramsay Bolton' },
 	)
 	const expected = JSON.stringify([
-		{ circular: '[Circular]', name: 'Jon Snow' },
-		{ circular: '[Circular]', name: 'Ramsay Bolton' },
+		{ circular: '[Circular: 0]', name: 'Jon Snow' },
+		{ circular: '[Circular: 0]', name: 'Ramsay Bolton' },
 	])
 	const actual = stringify(fixture)
 	assert.equal(actual, expected)
@@ -304,11 +304,11 @@ test('double child circular reference', (assert) => {
 	const cloned = structuredClone(fixture)
 	const expected = JSON.stringify({
 		childA: {
-			dinklage: '[Circular]',
+			dinklage: '[Circular: 1]',
 			name: 'Tyrion Lannister',
 		},
 		childB: {
-			dinklage: '[Circular]',
+			dinklage: '[Circular: 1]',
 			name: 'Tyrion Lannister',
 		},
 		name: 'Tywin Lannister',
@@ -410,7 +410,7 @@ test('nested child circular reference in toJSON', (assert) => {
 		bar: {
 			b: 2,
 			baz: {
-				circle: '[Circular]',
+				circle: '[Circular: 2]',
 				some: 'data',
 			},
 		},
@@ -459,7 +459,7 @@ test('replacer removing elements', (assert) => {
 
 	object.obj = object
 	actual = stringify(object, replacer)
-	assert.equal(actual, '{"f":null,"obj":"[Circular]","typed":{"0":0}}')
+	assert.equal(actual, '{"f":null,"obj":"[Circular: 0]","typed":{"0":0}}')
 
 	assert.end()
 })
@@ -554,7 +554,7 @@ test('array replacer', (assert) => {
 		},
 		replacer,
 	)
-	assert.equal(actual, expected.replace('null', '"[Circular]"'))
+	assert.equal(actual, expected.replace('null', '"[Circular: 0]"'))
 
 	assert.end()
 })
@@ -801,7 +801,7 @@ test('circular value option should allow strings and null', (assert) => {
 	const expected = '{"circular":"YEAH!!!"}'
 	const actual = stringifyCircularValue(object)
 	assert.equal(actual, expected)
-	assert.equal(stringify(object), '{"circular":"[Circular]"}')
+	assert.equal(stringify(object), '{"circular":"[Circular: 0]"}')
 
 	stringifyCircularValue = stringify.configure({ circularValue: JSON_NULL })
 	assert.equal(stringifyCircularValue(object), '{"circular":null}')
@@ -1008,7 +1008,7 @@ test('indent properly; regression test for issue #16', (assert) => {
 
 	firstItem.circular = o
 
-	const circularReplacement = '"items": [\n    {\n      "circular": "[Circular]",\n'
+	const circularReplacement = '"items": [\n    {\n      "circular": "[Circular: 0]",\n'
 	const circularIdentifier = '"items": [\n    {\n'
 
 	assert.equal(
@@ -2040,7 +2040,7 @@ function assertCircularOutput(
 	}
 }
 
-test('default circular markers are consistent in every serialization mode', (assert) => {
+test('circular markers report ancestor depth in every serialization mode', (assert) => {
 	const array: unknown[] = []
 	const child: MutableRecord = { array }
 	const root: MutableRecord = { child }
@@ -2051,11 +2051,11 @@ test('default circular markers are consistent in every serialization mode', (ass
 
 	const expected = {
 		child: {
-			array: ['[Circular]', '[Circular]', '[Circular]'],
-			root: '[Circular]',
-			self: '[Circular]',
+			array: ['[Circular: 0]', '[Circular: 1]', '[Circular: 2]'],
+			root: '[Circular: 0]',
+			self: '[Circular: 1]',
 		},
-		root: '[Circular]',
+		root: '[Circular: 0]',
 	}
 	const arrayRoot: unknown[] = []
 	const nestedArray: unknown[] = []
@@ -2071,7 +2071,7 @@ test('default circular markers are consistent in every serialization mode', (ass
 			assert,
 			serializer,
 			arrayRoot,
-			[['[Circular]', '[Circular]'], '[Circular]'],
+			[['[Circular: 0]', '[Circular: 1]'], '[Circular: 0]'],
 			[],
 		)
 	}
@@ -2079,7 +2079,19 @@ test('default circular markers are consistent in every serialization mode', (ass
 	assert.end()
 })
 
-test('circular references take precedence over maximumDepth', (assert) => {
+test('shared objects use the depth of their current branch', (assert) => {
+	const child: MutableRecord = {}
+	child.self = child
+	const root = { child, nested: { child } }
+	const expected = {
+		child: { self: '[Circular: 1]' },
+		nested: { child: { self: '[Circular: 2]' } },
+	}
+	assertCircularOutput(assert, stringify, root, expected, ['child', 'nested', 'self'])
+	assert.end()
+})
+
+test('circular depth takes precedence over maximumDepth', (assert) => {
 	const array: unknown[] = []
 	const child: MutableRecord = {}
 	const root: MutableRecord = { array, child }
@@ -2098,13 +2110,16 @@ test('circular references take precedence over maximumDepth', (assert) => {
 		assert,
 		stringify.configure({ maximumDepth: 2 }),
 		root,
-		{ array: ['[Circular]', '[Circular]'], child: { root: '[Circular]', self: '[Circular]' } },
+		{
+			array: ['[Circular: 0]', '[Circular: 1]'],
+			child: { root: '[Circular: 0]', self: '[Circular: 1]' },
+		},
 		keys,
 	)
 	assert.end()
 })
 
-test('toJSON results can refer to serialized ancestors', (assert) => {
+test('toJSON results refer to serialized ancestor depths', (assert) => {
 	const root: MutableRecord = {}
 	root.child = {
 		link: {
@@ -2118,7 +2133,7 @@ test('toJSON results can refer to serialized ancestors', (assert) => {
 			return root
 		},
 	}
-	assertCircularOutput(assert, stringify, wrapper, { child: { link: '[Circular]' } }, [
+	assertCircularOutput(assert, stringify, wrapper, { child: { link: '[Circular: 0]' } }, [
 		'child',
 		'link',
 	])
@@ -2131,7 +2146,7 @@ test('function replacers can create circular references to ancestors', (assert) 
 	}
 
 	const root = { child: { self: 0 }, self: 0 }
-	const expected = { child: { self: '[Circular]' }, self: '[Circular]' }
+	const expected = { child: { self: '[Circular: 1]' }, self: '[Circular: 0]' }
 	for (const space of [undefined, 2]) {
 		assert.equal(
 			stringify(root, circularReplacer, space),
@@ -2144,16 +2159,25 @@ test('function replacers can create circular references to ancestors', (assert) 
 
 test('explicit circular values retain their behavior in every mode', (assert) => {
 	const array: unknown[] = []
-	const root: MutableRecord = { array }
-	array.push(root)
+	const child: MutableRecord = {}
+	const root: MutableRecord = { array, child }
+	array.push(root, array)
+	child.root = root
+	child.self = child
 	root.self = root
 	for (const circularValue of ['', '[Circular]', '[Circular: 0]', 'custom', JSON_NULL, undefined]) {
 		const expected =
 			circularValue === undefined
-				? { array: [JSON_NULL] }
-				: { array: [circularValue], self: circularValue }
+				? { array: [JSON_NULL, JSON_NULL], child: {} }
+				: {
+						array: [circularValue, circularValue],
+						child: { root: circularValue, self: circularValue },
+						self: circularValue,
+					}
 		assertCircularOutput(assert, stringify.configure({ circularValue }), root, expected, [
 			'array',
+			'child',
+			'root',
 			'self',
 		])
 	}
@@ -2167,6 +2191,26 @@ test('explicit circular values retain their behavior in every mode', (assert) =>
 		}
 	}
 
+	assert.end()
+})
+
+test('circular depths can have multiple digits', (assert) => {
+	const root: MutableRecord = {}
+	let child = root
+	const expected: MutableRecord = {}
+	let expectedChild = expected
+	for (let index = 1; index < 12; index++) {
+		const next: MutableRecord = {}
+		child.next = next
+		child = next
+		const expectedNext: MutableRecord = {}
+		expectedChild.next = expectedNext
+		expectedChild = expectedNext
+	}
+
+	child.self = child
+	expectedChild.self = '[Circular: 11]'
+	assertCircularOutput(assert, stringify, root, expected, ['next', 'self'])
 	assert.end()
 })
 
