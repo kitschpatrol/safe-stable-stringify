@@ -47,7 +47,7 @@
 		"clean-deep": "shx rm -f pnpm-lock.yaml && git clean -fdX",
 		"fix": "ksc fix",
 		"lint": "ksc lint",
-		"release": "bumpp --preid fork --commit 'Release: %s' && pnpm build && pnpm publish --tag latest --otp $(op item get npm --otp)",
+		"release": "bumpp --preid fork --commit 'Release: %s' && pnpm build && pnpm publish --otp $(op item get npm --otp) --tag latest",
 		"test": "vitest run"
 	},
 	"devDependencies": {
