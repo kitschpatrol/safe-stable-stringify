@@ -5,6 +5,8 @@ type UnknownFunction = (...args: unknown[]) => unknown
 type Comparator = (left: string, right: string) => number
 type ReplacerFunction = (this: unknown, key: string, value: unknown) => unknown
 type FailFunction = (value: unknown) => never
+// Typed array entries fail individually, so safe mode can return an escaped error message.
+type TypedArrayFailFunction = (value: unknown) => string
 type CircularError = { toString: () => never }
 type SerializedValue = CircularError | string | undefined
 type CircularValueFunction = (depth: number) => SerializedValue
@@ -141,7 +143,8 @@ function wrapInQuotes(value: unknown): string {
 	return `"${String(value)}"`
 }
 
-function stringifyFloat(value: number, fail: FailFunction | undefined): string {
+function stringifyFloat(value: bigint | number, fail: TypedArrayFailFunction | undefined): string {
+	// BigInt entries are never finite numbers, so disabled bigint entries always fail here.
 	return Number.isFinite(value) ? String(value) : fail ? fail(value) : 'null'
 }
 
@@ -150,17 +153,23 @@ function stringifyTypedArray(
 	separator: string,
 	maximumBreadth: number,
 	bigint: 'string' | boolean,
-	fail: FailFunction | undefined,
+	fail: TypedArrayFailFunction | undefined,
 	type: string,
 ): string {
 	const breadth = Math.min(array.length, maximumBreadth)
 	const whitespace = separator === ',' ? '' : ' '
+	const isBigIntDisabled = bigint === false && type.startsWith('Big')
 
 	// Floating-point arrays can contain non-finite values, which JSON represents as `null`.
-	if (type.startsWith('Float')) {
-		let result = `"0":${whitespace}${stringifyFloat(array[0] as number, fail)}`
+	// BigInt arrays honor `bigint: false` by omitting entries, or by failing in strict mode.
+	if (isBigIntDisabled || type.startsWith('Float')) {
+		if (isBigIntDisabled && fail === undefined) {
+			return ''
+		}
+
+		let result = `"0":${whitespace}${stringifyFloat(array[0]!, fail)}`
 		for (let index = 1; index < breadth; index++) {
-			result += `${separator}"${index}":${whitespace}${stringifyFloat(array[index] as number, fail)}`
+			result += `${separator}"${index}":${whitespace}${stringifyFloat(array[index]!, fail)}`
 		}
 
 		return result
@@ -374,7 +383,8 @@ function getErrorMessage(error: unknown, name?: string): string {
 
 function callSafe(method: UnknownFunction, thisArgument: unknown, input: unknown): unknown {
 	try {
-		return method.call(thisArgument, input)
+		// `Reflect.apply` avoids reading a `call` property from the hook itself.
+		return Reflect.apply(method, thisArgument, [input])
 	} catch (error) {
 		return getErrorMessage(error, method.name)
 	}
@@ -386,7 +396,10 @@ function makeSafe<T extends (...args: never[]) => unknown>(method: T, name?: str
 			// Upstream invokes safe replacers without a receiver.
 			return method(...input)
 		} catch (error) {
-			return name === undefined ? `"${getErrorMessage(error, name)}"` : getErrorMessage(error, name)
+			// Serializer results are JSON fragments, so their messages must be escaped.
+			return name === undefined
+				? stringifyString(getErrorMessage(error, name))
+				: getErrorMessage(error, name)
 		}
 	}
 
@@ -400,7 +413,6 @@ function makeSafe<T extends (...args: never[]) => unknown>(method: T, name?: str
  * Create a safe, stable stringify function with the supplied options.
  */
 export function configure(options?: StringifyOptions): Stringify {
-	type ToJson = { toJSON: (key: string) => unknown }
 	type FunctionReplacerSerializer = (
 		key: string,
 		parent: unknown,
@@ -451,14 +463,18 @@ export function configure(options?: StringifyOptions): Stringify {
 	const maximumDepth = getPositiveIntegerOption(normalizedOptions, 'maximumDepth')
 	const maximumBreadth = getPositiveIntegerOption(normalizedOptions, 'maximumBreadth')
 	const isSafe = getBooleanOption(normalizedOptions, 'safe', false)
+	// In safe mode, strict typed array failures are reported at their indices.
+	const failTypedArray =
+		isSafe && fail
+			? makeSafe<TypedArrayFailFunction>(fail)
+			: (fail as TypedArrayFailFunction | undefined)
 
 	// Calls `toJSON` with the string key required by the native JSON API. Array indexes are
 	// passed as numbers and only converted to strings when a `toJSON` method needs them.
-	const callToJson = (value: ToJson, key: number | string): unknown => {
+	// The hook is read once by the caller, matching `JSON.stringify` for accessor properties.
+	const callToJson = (toJson: UnknownFunction, value: unknown, key: number | string): unknown => {
 		const jsonKey = typeof key === 'number' ? String(key) : key
-		return isSafe
-			? callSafe(value.toJSON as UnknownFunction, value, jsonKey)
-			: value.toJSON(jsonKey)
+		return isSafe ? callSafe(toJson, value, jsonKey) : Reflect.apply(toJson, value, [jsonKey])
 	}
 
 	let stringifyPrimitive: PrimitiveSerializer = (value) => {
@@ -513,12 +529,11 @@ export function configure(options?: StringifyOptions): Stringify {
 	) => {
 		let value = (parent as Record<string, unknown>)[key]
 
-		if (
-			typeof value === 'object' &&
-			value &&
-			typeof (value as { toJSON?: unknown }).toJSON === 'function'
-		) {
-			value = callToJson(value as ToJson, key)
+		if (typeof value === 'object' && value) {
+			const toJson = (value as { toJSON?: unknown }).toJSON
+			if (typeof toJson === 'function') {
+				value = callToJson(toJson as UnknownFunction, value, key)
+			}
 		}
 
 		value = replacer.call(parent, key, value)
@@ -661,8 +676,9 @@ export function configure(options?: StringifyOptions): Stringify {
 			return 'null'
 		}
 
-		if (typeof (value as { toJSON?: unknown }).toJSON === 'function') {
-			const jsonValue = callToJson(value as ToJson, key)
+		const toJson = (value as { toJSON?: unknown }).toJSON
+		if (typeof toJson === 'function') {
+			const jsonValue = callToJson(toJson as UnknownFunction, value, key)
 			if (typeof jsonValue !== 'object') {
 				return stringifyPrimitive(jsonValue)
 			}
@@ -770,8 +786,9 @@ export function configure(options?: StringifyOptions): Stringify {
 			return 'null'
 		}
 
-		if (typeof (value as { toJSON?: unknown }).toJSON === 'function') {
-			const jsonValue = callToJson(value as ToJson, key)
+		const toJson = (value as { toJSON?: unknown }).toJSON
+		if (typeof toJson === 'function') {
+			const jsonValue = callToJson(toJson as UnknownFunction, value, key)
 			// Prevent calling `toJSON` again.
 			if (typeof jsonValue !== 'object') {
 				return stringifyPrimitive(jsonValue)
@@ -850,10 +867,18 @@ export function configure(options?: StringifyOptions): Stringify {
 		const typedArrayType = getTypedArrayType(value)
 		if (typedArrayType !== undefined) {
 			const typedArray = value as NumericArray
-			result += stringifyTypedArray(typedArray, join, maximumBreadth, bigint, fail, typedArrayType)
+			result += stringifyTypedArray(
+				typedArray,
+				join,
+				maximumBreadth,
+				bigint,
+				failTypedArray,
+				typedArrayType,
+			)
 			keys = keys.slice(typedArray.length)
 			maximumPropertiesToStringify -= typedArray.length
-			separator = join
+			// Omitted bigint entries leave no output to separate.
+			separator = result === '' ? '' : join
 		}
 
 		if (deterministic !== false) {
@@ -895,8 +920,9 @@ export function configure(options?: StringifyOptions): Stringify {
 			return 'null'
 		}
 
-		if (typeof (value as { toJSON?: unknown }).toJSON === 'function') {
-			const jsonValue = callToJson(value as ToJson, key)
+		const toJson = (value as { toJSON?: unknown }).toJSON
+		if (typeof toJson === 'function') {
+			const jsonValue = callToJson(toJson as UnknownFunction, value, key)
 			// Prevent calling `toJSON` again.
 			if (typeof jsonValue !== 'object') {
 				return stringifyPrimitive(jsonValue)
@@ -964,10 +990,18 @@ export function configure(options?: StringifyOptions): Stringify {
 		const typedArrayType = hasLength ? getTypedArrayType(value) : undefined
 		if (typedArrayType !== undefined) {
 			const typedArray = value as NumericArray
-			result += stringifyTypedArray(typedArray, ',', maximumBreadth, bigint, fail, typedArrayType)
+			result += stringifyTypedArray(
+				typedArray,
+				',',
+				maximumBreadth,
+				bigint,
+				failTypedArray,
+				typedArrayType,
+			)
 			keys = keys.slice(typedArray.length)
 			maximumPropertiesToStringify -= typedArray.length
-			separator = ','
+			// Omitted bigint entries leave no output to separate.
+			separator = result === '' ? '' : ','
 		}
 
 		if (deterministic !== false) {
