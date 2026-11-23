@@ -75,20 +75,6 @@ const scenarios = [
 	},
 	{
 		create() {
-			let reads = 0
-			return {
-				child: {
-					get toJSON() {
-						reads++
-						return () => reads
-					},
-				},
-			}
-		},
-		name: 'toJSON accessors',
-	},
-	{
-		create() {
 			return {
 				child: {
 					get value() {
@@ -169,6 +155,32 @@ test.each(scenarios)('$name match upstream in every mode', (scenario) => {
 				const expected = serialize(upstream.configure(config), create, replacer, space)
 				const actual = serialize(configure(config), create, replacer, space)
 				expect(actual).toEqual(expected)
+			}
+		}
+	}
+})
+
+// Upstream 3.0.2 reads `toJSON` accessors once, like native JSON, but the latest published
+// upstream release (3.0.1) still reads them twice. Compare with native JSON until the upstream
+// devDependency can move to ^3.0.2, then restore this scenario to the parity list above.
+test('toJSON accessors match native JSON in every mode', () => {
+	function create() {
+		let reads = 0
+		return {
+			child: {
+				get toJSON() {
+					reads++
+					return () => reads
+				},
+			},
+		}
+	}
+
+	for (const config of options) {
+		for (const replacer of [undefined, (_key: string, value: unknown) => value, keys]) {
+			for (const space of [undefined, 2]) {
+				const expected = capture(() => JSON.stringify(create(), replacer as never, space))
+				expect(serialize(configure(config), create, replacer, space)).toEqual(expected)
 			}
 		}
 	}

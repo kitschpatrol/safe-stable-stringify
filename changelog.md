@@ -4,13 +4,26 @@
 
 - **Breaking change:** Adopt upstream's default `'[Circular: N]'` marker, where `N` is the referenced ancestor's depth, starting at 0 for the root. Set `circularValue: '[Circular]'` to retain the previous output.
 - Align strict option validation, safe mode error handling, accessor evaluation, and exported aliases with upstream 3.0.0.
+- Port upstream 3.0.1 and 3.0.2 fixes: BigInt typed arrays honor `bigint: false` and strict mode, safe mode escapes caught error messages, `toJSON` accessors are read once, explicit `Infinity` is accepted for `maximumDepth` and `maximumBreadth`, and short strings are escaped with a loop.
 - See the readme for changes.
 
 ---
 
 Upstream changelog:
 
-## Unreleased
+## v3.0.2
+
+- Read the `toJSON` property once when checking for and calling the serialization hook.
+- Accept explicit `Infinity` for `maximumDepth` and `maximumBreadth` to leave them unlimited.
+- Speed up JSON escaping for strings shorter than 10 UTF-16 code units.
+
+## v3.0.1
+
+- Apply `bigint: false` and strict mode to BigInt typed-array entries.
+- Report strict-mode errors at their typed-array indices when `safe` is enabled.
+- Escape caught error messages in safe mode so quotes, backslashes, and control characters produce valid JSON.
+
+## v3.0.0
 
 - **Breaking change:** Require Node.js 18 or later.
 - Fix ESM imports in Node.js and bundlers, including applications that also use CommonJS.

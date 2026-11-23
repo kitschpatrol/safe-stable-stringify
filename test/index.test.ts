@@ -1318,6 +1318,46 @@ test('should throw when maximumBreadth receives malformed input', (assert) => {
 	assert.end()
 })
 
+test('maximumDepth and maximumBreadth accept the default Infinity', (assert) => {
+	const input = { a: [1, 2, 3, { b: { c: [4, 5] } }], d: 6 }
+	const expected = stringify.configure({})(input)
+	assert.equal(stringify.configure({ maximumDepth: Infinity })(input), expected)
+	assert.equal(stringify.configure({ maximumBreadth: Infinity })(input), expected)
+	assert.equal(
+		stringify.configure({ maximumBreadth: Infinity, maximumDepth: Infinity })(input, JSON_NULL, 2),
+		stringify(input, JSON_NULL, 2),
+	)
+	for (const value of [-Infinity, NaN]) {
+		assert.throws(() => stringify.configure({ maximumDepth: value }))
+		assert.throws(() => stringify.configure({ maximumBreadth: value }))
+	}
+
+	assert.end()
+})
+
+test('short strings escape every character class at the loop boundary', (assert) => {
+	// Strings shorter than 10 code units are scanned with a loop instead of the regular expression.
+	for (const ending of [
+		'',
+		'"',
+		'\\',
+		'\n',
+		'\u{1F}',
+		'\u{D800}',
+		'\u{DFFF}',
+		'\u{E000}',
+		'\u{1F600}',
+	]) {
+		for (let length = 0; length <= 12; length++) {
+			const text = 'x'.repeat(Math.max(0, length - ending.length)) + ending
+			assert.equal(stringify(text), JSON.stringify(text))
+			assert.equal(stringify({ [text]: text }), JSON.stringify({ [text]: text }))
+		}
+	}
+
+	assert.end()
+})
+
 test('check that all single characters are identical to JSON.stringify', (assert) => {
 	for (let i = 0; i < 2 ** 16; i++) {
 		const string = String.fromCharCode(i)
@@ -1845,6 +1885,32 @@ test('safe mode safeguards against failing toJSON and a difficult to stringify e
 	assert.end()
 })
 
+test('safe mode escapes error messages from throwing getters', (assert) => {
+	const serializer = stringify.configure({ safe: true })
+	for (const message of ['Missing "token"', 'line\nbreak', 'path\\file', '\u{0}', '\u{D800}']) {
+		const input = {
+			get token(): never {
+				throw new Error(message)
+			},
+		}
+		const expected = `Error: Stringification failed (${message})`
+		const results = [
+			serializer(input),
+			serializer(input, JSON_NULL, 2),
+			serializer(input, ['token']),
+		]
+		for (const result of results) {
+			assert.equal(result, JSON.stringify(expected))
+			assert.equal(JSON.parse(result!), expected)
+		}
+
+		const replaced = serializer(input, (_key, value) => value)
+		assert.same(JSON.parse(replaced!), { token: expected })
+	}
+
+	assert.end()
+})
+
 type ReplacerArgument = Parameters<typeof stringify>[1]
 
 function identityReplacer(_key: string, value: unknown): unknown {
@@ -1944,6 +2010,7 @@ for (const name of ['Float16Array', 'Float32Array', 'Float64Array']) {
 	test(`${name} serializes non-finite values`, { skip: floatArray === undefined }, (assert) => {
 		const typedArray = floatArray!
 		const strict = stringify.configure({ strict: true })
+		const safeStrict = stringify.configure({ safe: true, strict: true })
 		for (const space of [undefined, 2]) {
 			for (const number of [NaN, Infinity, -Infinity]) {
 				for (const values of [
@@ -1955,6 +2022,18 @@ for (const name of ['Float16Array', 'Float32Array', 'Float64Array']) {
 					assert.throws(() => strict(value, JSON_NULL, space), {
 						message: `Object can not safely be stringified. Received type number (${number})`,
 					})
+					// Safe mode reports strict failures at their typed array indices.
+					const metrics: Record<number, number | string> = {}
+					for (const [index, entry] of values.entries()) {
+						metrics[index] = Number.isFinite(entry)
+							? entry
+							: `Error: Stringification failed (Object can not safely be stringified. Received type number (${entry}))`
+					}
+
+					assert.equal(
+						safeStrict(value, JSON_NULL, space),
+						JSON.stringify({ metrics }, JSON_NULL, space),
+					)
 				}
 			}
 
@@ -2020,6 +2099,145 @@ test('integer and bigint typed arrays retain their formatting', (assert) => {
 			for (const space of [undefined, 2]) {
 				assert.equal(serialize(value, JSON_NULL, space), JSON.stringify(expected, JSON_NULL, space))
 			}
+		}
+	}
+
+	assert.end()
+})
+
+const bigintArrayConstructors: Array<{ from: (values: bigint[]) => ArrayLike<bigint> }> = [
+	BigInt64Array,
+	BigUint64Array,
+]
+
+function getStrictBigIntMessage(value: bigint): string {
+	return `Object can not safely be stringified. Received type bigint (${value})`
+}
+
+// Combines each BigInt typed array type with empty, single, and multiple entries.
+const bigintArrayCases = bigintArrayConstructors.flatMap((bigintArray) =>
+	[[], [0n], [1n, 2n]].flatMap((values) =>
+		[undefined, 2].flatMap((space) =>
+			[false, true].map((safe) => ({ safe, space, value: bigintArray.from(values), values })),
+		),
+	),
+)
+
+function mapBigIntEntries<T>(values: bigint[], callback: (value: bigint) => T): Record<number, T> {
+	return Object.fromEntries(values.map((value, index) => [index, callback(value)]))
+}
+
+test('bigint typed arrays apply the configured bigint policy', (assert) => {
+	for (const { safe, space, value, values } of bigintArrayCases) {
+		const omit = stringify.configure({ bigint: false, safe })
+		assert.equal(omit(value, JSON_NULL, space), '{}')
+		assert.equal(
+			omit({ nested: value }, JSON_NULL, space),
+			JSON.stringify({ nested: {} }, JSON_NULL, space),
+		)
+
+		// Strict mode disables BigInt values unless they are explicitly enabled.
+		for (const bigint of [undefined, false]) {
+			const strict = stringify.configure({ bigint, safe, strict: true })
+			if (!safe && values.length > 0) {
+				assert.throws(() => strict(value, JSON_NULL, space), {
+					message: getStrictBigIntMessage(values[0]!),
+				})
+				continue
+			}
+
+			const expected = mapBigIntEntries(
+				values,
+				(entry) => `Error: Stringification failed (${getStrictBigIntMessage(entry)})`,
+			)
+			assert.equal(strict(value, JSON_NULL, space), JSON.stringify(expected, JSON_NULL, space))
+			assert.equal(
+				strict({ nested: value }, JSON_NULL, space),
+				JSON.stringify({ nested: expected }, JSON_NULL, space),
+			)
+		}
+
+		for (const bigint of [true, 'string'] as const) {
+			const strict = stringify.configure({ bigint, safe, strict: true })
+			const expected = mapBigIntEntries(values, (entry) =>
+				bigint === 'string' ? String(entry) : Number(entry),
+			)
+			assert.equal(strict(value, JSON_NULL, space), JSON.stringify(expected, JSON_NULL, space))
+		}
+	}
+
+	assert.end()
+})
+
+function descending(left: string, right: string): number {
+	return right.localeCompare(left)
+}
+
+// Combines each key order with breadths around the typed array length and the extra keys.
+const omittedBigIntCases = [true, false, descending].flatMap((deterministic) =>
+	[1, 11, 12, 13, 14, 15].flatMap((maximumBreadth) =>
+		[false, true].map((safe) => ({ deterministic, maximumBreadth, safe })),
+	),
+)
+
+function getOmittedBigIntExpectation(
+	deterministic: boolean | typeof descending,
+	maximumBreadth: number,
+): MutableRecord {
+	const expected: MutableRecord = {}
+	const keys = deterministic === true ? ['a', 'z'] : ['z', 'a']
+	const extraValues: MutableRecord = { a: 2, z: 1 }
+	const serializedKeys = keys.slice(0, Math.max(0, maximumBreadth - 12))
+	for (const key of serializedKeys) {
+		expected[key] = extraValues[key]
+	}
+
+	if (maximumBreadth < 14) {
+		expected['...'] = `${getItemCountText(14 - maximumBreadth)} not stringified`
+	}
+
+	return expected
+}
+
+function getItemCountText(count: number): string {
+	return count === 1 ? '1 item' : `${count} items`
+}
+
+test('omitted bigint typed array entries preserve property order and breadth', (assert) => {
+	for (const bigintArray of bigintArrayConstructors) {
+		// Insert `z` before `a` so non-deterministic output differs from sorted output.
+		const value = Object.assign(
+			bigintArray.from([0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n]),
+			{ z: 1 },
+			{ a: 2 },
+		)
+		for (const { deterministic, maximumBreadth, safe } of omittedBigIntCases) {
+			const serialize = stringify.configure({ bigint: false, deterministic, maximumBreadth, safe })
+			const expected = getOmittedBigIntExpectation(deterministic, maximumBreadth)
+			for (const space of [undefined, 2]) {
+				assert.equal(serialize(value, JSON_NULL, space), JSON.stringify(expected, JSON_NULL, space))
+			}
+		}
+	}
+
+	assert.end()
+})
+
+test('bigint typed array policy uses the intrinsic type', (assert) => {
+	class BigIntSubclass extends BigInt64Array {}
+	const foreign = runInNewContext('new BigUint64Array([1n, 2n])') as BigUint64Array
+	const subclass = new BigIntSubclass([1n, 2n])
+	const disguised = new BigInt64Array([1n, 2n])
+	Object.defineProperties(disguised, {
+		constructor: { value: Int32Array },
+		[Symbol.toStringTag]: { value: 'Int32Array' },
+	})
+	const serialize = stringify.configure({ bigint: false })
+	const strict = stringify.configure({ strict: true })
+	for (const value of [foreign, subclass, disguised]) {
+		for (const space of [undefined, 2]) {
+			assert.equal(serialize(value, JSON_NULL, space), '{}')
+			assert.throws(() => strict(value, JSON_NULL, space), { message: getStrictBigIntMessage(1n) })
 		}
 	}
 
@@ -2211,6 +2429,70 @@ test('circular depths can have multiple digits', (assert) => {
 	child.self = child
 	expectedChild.self = '[Circular: 11]'
 	assertCircularOutput(assert, stringify, root, expected, ['next', 'self'])
+	assert.end()
+})
+
+type ToJsonWrapper = (value: MutableRecord) => unknown
+
+function createToJsonAccessorInput(inherited: boolean, wrap: ToJsonWrapper) {
+	let reads = 0
+	const calls: Array<[boolean, string]> = []
+	const holder: MutableRecord = {}
+	const value: MutableRecord = inherited ? (Object.create(holder) as MutableRecord) : holder
+	Object.defineProperty(holder, 'toJSON', {
+		get() {
+			reads++
+			return function (this: unknown, key: string) {
+				calls.push([this === value, key])
+				return { value: reads }
+			}
+		},
+	})
+	return { calls, input: wrap(value), readCount: () => reads }
+}
+
+// Combines inherited and own accessors with root, object property, and array element positions.
+const toJsonAccessorCases = [false, true].flatMap((inherited) =>
+	[
+		(value: MutableRecord) => value,
+		(value: MutableRecord) => ({ item: value }),
+		(value: MutableRecord) => [value],
+	].flatMap((wrap: ToJsonWrapper) =>
+		getModes(['item', 'value']).map((mode) => ({ inherited, wrap, ...mode })),
+	),
+)
+
+test('toJSON accessors are read once', (assert) => {
+	for (const safe of [false, true]) {
+		const serializer = stringify.configure({ safe })
+		for (const { inherited, replacer, space, wrap } of toJsonAccessorCases) {
+			const native = createToJsonAccessorInput(inherited, wrap)
+			const actual = createToJsonAccessorInput(inherited, wrap)
+			const expected = nativeStringify(native.input, replacer, space)
+			assert.equal(serializer(actual.input, replacer, space), expected)
+			assert.equal(actual.readCount(), 1)
+			// The hook receives the original value and a string key.
+			assert.same(actual.calls, native.calls)
+		}
+	}
+
+	assert.end()
+})
+
+test('cached toJSON hooks can have their own call property', (assert) => {
+	const toJSON = Object.assign(
+		function (this: { value: number }, key: string) {
+			return [this.value, key]
+		},
+		{ call: undefined },
+	)
+	const input = { toJSON, value: 1 }
+	for (const space of [undefined, 2]) {
+		for (const replacer of [undefined, ['value'], identityReplacer]) {
+			assert.equal(stringify(input, replacer, space), nativeStringify(input, replacer, space))
+		}
+	}
+
 	assert.end()
 })
 
